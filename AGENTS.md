@@ -1,0 +1,1 @@
+./install-app.sh 默认编译脚本。
