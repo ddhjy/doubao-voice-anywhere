@@ -5,9 +5,10 @@ import Foundation
 protocol EventTapDelegate: AnyObject {
     func handleFlagsChanged(event: CGEvent) -> Bool
     func handleKeyDown(event: CGEvent) -> Bool
+    func handleMouseDown(event: CGEvent, type: CGEventType) -> Bool
 }
 
-/// 包装 CGEventTap：监听 `flagsChanged`（Fn）+ `keyDown`（Ctrl+Space）。
+/// 包装 CGEventTap：监听 `flagsChanged`（Fn）、`keyDown` 和鼠标点击。
 ///
 /// - 需要"辅助功能"权限
 /// - 由 RunLoop 驱动，被系统禁用时（超时/用户输入）会自动重启
@@ -23,7 +24,10 @@ final class EventTapController {
 
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue) |
-            (1 << CGEventType.keyDown.rawValue)
+            (1 << CGEventType.keyDown.rawValue) |
+            (1 << CGEventType.leftMouseDown.rawValue) |
+            (1 << CGEventType.rightMouseDown.rawValue) |
+            (1 << CGEventType.otherMouseDown.rawValue)
 
         let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
 
@@ -46,7 +50,7 @@ final class EventTapController {
         eventTap = tap
         runLoopSource = source
 
-        Logger.shared.info("EventTap 已启动（监听 flagsChanged + keyDown）")
+        Logger.shared.info("EventTap 已启动（监听 flagsChanged + keyDown + mouseDown）")
         return true
     }
 
@@ -86,6 +90,8 @@ final class EventTapController {
             handled = delegate.handleFlagsChanged(event: event)
         case .keyDown:
             handled = delegate.handleKeyDown(event: event)
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            handled = delegate.handleMouseDown(event: event, type: type)
         default:
             handled = false
         }

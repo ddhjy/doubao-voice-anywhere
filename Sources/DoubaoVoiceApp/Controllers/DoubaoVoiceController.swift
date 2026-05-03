@@ -34,10 +34,9 @@ final class DoubaoVoiceController: EventTapDelegate {
     // MARK: - 键码常量
 
     private let keyCodeFn: Int64 = 63
+    // 新款键盘的 Fn/Globe 有时还会额外发一个 keyDown 179。
+    private let keyCodeFnKeyDown: Int64 = 179
     private let keyCodeSpace: Int64 = 49
-    private let keyCodeReturn: Int64 = 36
-    private let keyCodeKeypadEnter: Int64 = 76
-    private let keyCodeEscape: Int64 = 53
 
     // MARK: - 状态
 
@@ -134,13 +133,17 @@ final class DoubaoVoiceController: EventTapDelegate {
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) == 1
 
-        if fnIsDown && keycode != keyCodeFn {
+        if fnIsDown && !isFnKeyDownEvent(keycode) {
             fnWasUsedWithOtherKey = true
         }
 
-        if doubaoVoiceActive && isExternalDoubaoVoiceStopKey(keycode) {
+        if isFnKeyDownEvent(keycode) {
+            return true
+        }
+
+        if doubaoVoiceActive {
             if !isRepeat {
-                markDoubaoVoiceStoppedByExternalKey(keycode: keycode)
+                markDoubaoVoiceStoppedByExternalActivity("检测到键盘输入 \(keycode) 结束豆包语音")
             }
             return false
         }
@@ -160,6 +163,17 @@ final class DoubaoVoiceController: EventTapDelegate {
             toggleNormalInputSource()
         }
         return true
+    }
+
+    func handleMouseDown(event: CGEvent, type: CGEventType) -> Bool {
+        if doubaoVoiceActive {
+            markDoubaoVoiceStoppedByExternalActivity("检测到鼠标点击 \(type) 结束豆包语音")
+        }
+        return false
+    }
+
+    private func isFnKeyDownEvent(_ keycode: Int64) -> Bool {
+        keycode == keyCodeFn || keycode == keyCodeFnKeyDown
     }
 
     // MARK: - Fn 单按调度
@@ -255,15 +269,9 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
-    private func isExternalDoubaoVoiceStopKey(_ keycode: Int64) -> Bool {
-        keycode == keyCodeReturn
-            || keycode == keyCodeKeypadEnter
-            || keycode == keyCodeEscape
-    }
-
-    private func markDoubaoVoiceStoppedByExternalKey(keycode: Int64) {
+    private func markDoubaoVoiceStoppedByExternalActivity(_ reason: String) {
         doubaoVoiceActive = false
-        scheduleRestorePreviousIME(reason: "检测到按键 \(keycode) 结束豆包语音")
+        scheduleRestorePreviousIME(reason: reason)
     }
 
     private func scheduleRestorePreviousIME(reason: String) {
