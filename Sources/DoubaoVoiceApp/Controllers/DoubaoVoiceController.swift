@@ -35,6 +35,9 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     private let keyCodeFn: Int64 = 63
     private let keyCodeSpace: Int64 = 49
+    private let keyCodeReturn: Int64 = 36
+    private let keyCodeKeypadEnter: Int64 = 76
+    private let keyCodeEscape: Int64 = 53
 
     // MARK: - 状态
 
@@ -129,9 +132,17 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     func handleKeyDown(event: CGEvent) -> Bool {
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) == 1
 
         if fnIsDown && keycode != keyCodeFn {
             fnWasUsedWithOtherKey = true
+        }
+
+        if doubaoVoiceActive && isExternalDoubaoVoiceStopKey(keycode) {
+            if !isRepeat {
+                markDoubaoVoiceStoppedByExternalKey(keycode: keycode)
+            }
+            return false
         }
 
         guard keycode == keyCodeSpace else { return false }
@@ -145,7 +156,6 @@ final class DoubaoVoiceController: EventTapDelegate {
 
         guard onlyControl else { return false }
 
-        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) == 1
         if !isRepeat {
             toggleNormalInputSource()
         }
@@ -241,17 +251,32 @@ final class DoubaoVoiceController: EventTapDelegate {
     private func stopDoubaoVoice() {
         KeyboardSimulator.doubleTapLeftOption {
             self.doubaoVoiceActive = false
-            self.cancelRestoreImeTimer()
-            let work = DispatchWorkItem { [weak self] in
-                self?.restorePreviousIME()
-            }
-            self.restoreImeTimer = work
-            DispatchQueue.main.asyncAfter(
-                deadline: .now() + self.restoreAfterVoiceStopDelay,
-                execute: work
-            )
-            Logger.shared.debug("豆包语音输入已停止，已安排恢复之前输入法")
+            self.scheduleRestorePreviousIME(reason: "豆包语音输入已停止")
         }
+    }
+
+    private func isExternalDoubaoVoiceStopKey(_ keycode: Int64) -> Bool {
+        keycode == keyCodeReturn
+            || keycode == keyCodeKeypadEnter
+            || keycode == keyCodeEscape
+    }
+
+    private func markDoubaoVoiceStoppedByExternalKey(keycode: Int64) {
+        doubaoVoiceActive = false
+        scheduleRestorePreviousIME(reason: "检测到按键 \(keycode) 结束豆包语音")
+    }
+
+    private func scheduleRestorePreviousIME(reason: String) {
+        cancelRestoreImeTimer()
+        let work = DispatchWorkItem { [weak self] in
+            self?.restorePreviousIME()
+        }
+        restoreImeTimer = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + restoreAfterVoiceStopDelay,
+            execute: work
+        )
+        Logger.shared.debug("\(reason)，已安排恢复之前输入法")
     }
 
     // MARK: - 输入法切换的细节
