@@ -44,6 +44,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     private var sourceBeforeFnTap: InputSource?
     private var lastNonDoubaoInputSource: InputSource?
     private(set) var doubaoVoiceActive: Bool = false
+    private var voiceTransitionInProgress: Bool = false
     private var fnIsDown: Bool = false
     private var fnWasUsedWithOtherKey: Bool = false
 
@@ -96,6 +97,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
         cancelPendingActionTimer()
         cancelRestoreImeTimer()
+        voiceTransitionInProgress = false
     }
 
     // MARK: - EventTapDelegate
@@ -203,6 +205,12 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     /// 等价于按一次 Fn：启动 / 停止豆包语音，菜单栏可直接调用。
     func toggleDoubaoVoice() {
+        guard !voiceTransitionInProgress else {
+            Logger.shared.warn("豆包语音启动/停止仍在处理中，忽略本次 Fn")
+            return
+        }
+
+        voiceTransitionInProgress = true
         if doubaoVoiceActive {
             stopDoubaoVoice()
         } else {
@@ -235,11 +243,15 @@ final class DoubaoVoiceController: EventTapDelegate {
         let triggerVoice: () -> Void = {
             if !self.isDoubaoIMEActive() && !self.setDoubaoIME() {
                 self.showAlert("切不到豆包输入法，请确认已安装")
+                self.finishVoiceTransition()
                 return
             }
-            self.waitForDoubaoIME {
+            self.waitForDoubaoIME(onTimeout: {
+                self.finishVoiceTransition()
+            }) {
                 KeyboardSimulator.doubleTapLeftOption {
                     self.doubaoVoiceActive = true
+                    self.finishVoiceTransition()
                     Logger.shared.debug("豆包语音输入已启动，等待再次按 Fn 停止")
                 }
             }
@@ -254,7 +266,9 @@ final class DoubaoVoiceController: EventTapDelegate {
             let ok = selectNormalChineseInputMethod()
             Logger.shared.debug("当前是键盘布局 \(previous.value)，先桥接到日常中文输入法 \(Self.normalChineseInputMethod)，结果: \(ok)")
             if ok {
-                waitForNormalChineseInputMethod(then: triggerVoice)
+                waitForNormalChineseInputMethod(onTimeout: { [weak self] in
+                    self?.finishVoiceTransition()
+                }, then: triggerVoice)
                 return
             }
         }
@@ -266,7 +280,12 @@ final class DoubaoVoiceController: EventTapDelegate {
         KeyboardSimulator.doubleTapLeftOption {
             self.doubaoVoiceActive = false
             self.scheduleRestorePreviousIME(reason: "豆包语音输入已停止")
+            self.finishVoiceTransition()
         }
+    }
+
+    private func finishVoiceTransition() {
+        voiceTransitionInProgress = false
     }
 
     private func markDoubaoVoiceStoppedByExternalActivity(_ reason: String) {
@@ -378,6 +397,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         timeoutMessage: String,
         isReady: @escaping () -> Bool,
         deadline: Date? = nil,
+        onTimeout: (() -> Void)? = nil,
         onReady: @escaping () -> Void
     ) {
         if isReady() {
@@ -388,24 +408,27 @@ final class DoubaoVoiceController: EventTapDelegate {
         if Date() >= realDeadline {
             Logger.shared.error("等待\(description)生效超时: currentSourceID=\(InputSourceManager.currentSourceID() ?? "nil"), currentMethod=\(InputSourceManager.currentMethod() ?? "nil"), currentLayout=\(InputSourceManager.currentLayout() ?? "nil")")
             showAlert(timeoutMessage)
+            onTimeout?()
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + inputSourcePollInterval) { [weak self] in
             self?.waitForInputSource(
                 description: description,
-                timeoutMessage: "\(description) 切换超时",
+                timeoutMessage: timeoutMessage,
                 isReady: isReady,
                 deadline: realDeadline,
+                onTimeout: onTimeout,
                 onReady: onReady
             )
         }
     }
 
-    private func waitForDoubaoIME(then onReady: @escaping () -> Void) {
+    private func waitForDoubaoIME(onTimeout: (() -> Void)? = nil, then onReady: @escaping () -> Void) {
         waitForInputSource(
             description: "豆包输入法",
             timeoutMessage: "豆包输入法没切过去，再按一次 Fn",
-            isReady: { [weak self] in self?.isDoubaoIMEActive() ?? false }
+            isReady: { [weak self] in self?.isDoubaoIMEActive() ?? false },
+            onTimeout: onTimeout
         ) {
             self.nudgeForegroundAppIfNeeded(description: "豆包输入法") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + self.voiceTriggerAfterSwitchDelay, execute: onReady)
@@ -413,11 +436,12 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
-    private func waitForNormalChineseInputMethod(then onReady: @escaping () -> Void) {
+    private func waitForNormalChineseInputMethod(onTimeout: (() -> Void)? = nil, then onReady: @escaping () -> Void) {
         waitForInputSource(
             description: "日常中文输入法",
             timeoutMessage: "切回中文输入法超时了",
-            isReady: { [weak self] in self?.isNormalChineseInputMethodActive() ?? false }
+            isReady: { [weak self] in self?.isNormalChineseInputMethodActive() ?? false },
+            onTimeout: onTimeout
         ) {
             self.nudgeForegroundAppIfNeeded(description: "日常中文输入法") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + self.inputMethodBridgeDelay, execute: onReady)

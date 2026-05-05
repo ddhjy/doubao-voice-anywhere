@@ -84,7 +84,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 
 - 用 `CGEventTap` 监听全局 `flagsChanged` 和 `keyDown`，识别"轻按 Fn"和 `Ctrl+Space`。
 - 用 Carbon `TextInputSources` (TIS) 切换输入法 / 键盘布局。
-- 触发豆包语音时，构造 `flagsChanged` 事件并设置带 `deviceLeftAlternate` 的 raw flags 来"双击左 Option"。这是豆包识别快捷键的关键，普通 keyDown/keyUp 不行。
+- 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 双击；事件序列保持为真实双击形态：down/up/down/up。
 - 全程不依赖 Hammerspoon 或任何脚本运行时，纯 Swift + AppKit + Carbon。
 
 ## 适合谁
@@ -108,7 +108,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 - Swift 5.9 + SwiftPM 可执行包，单文件 `Package.swift`
 - 输入源切换：Carbon `TextInputSources` (TIS)
 - 全局键盘事件：`CGEventTap`（`flagsChanged` + `keyDown`）
-- 模拟左 Option：构造 `flagsChanged` 事件并设置带 `deviceLeftAlternate` 的 raw flags（豆包识别快捷键的关键，普通 keyDown/keyUp 不行）
+- 模拟左 Option：使用 combined-session `flagsChanged` 事件，并在 HID / combined session 两层状态里确认释放
 - 菜单栏宿主：`NSStatusItem` + `LSUIElement = true`
 - 不依赖 Xcode 工程；编译产物用 shell 脚本直接组装成 `.app` bundle 并使用固定开发者证书签名
 
