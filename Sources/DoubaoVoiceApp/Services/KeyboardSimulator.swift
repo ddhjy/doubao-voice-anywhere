@@ -14,14 +14,22 @@ enum KeyboardSimulator {
     private static let rawMaskNonCoalesced: UInt64 = 0x0000_0100
     private static let rawMaskAlternate: UInt64 = 0x0008_0000
     private static let rawMaskDeviceLeftAlternate: UInt64 = 0x0000_0020
+    private static let rawMaskDeviceRightAlternate: UInt64 = 0x0000_0040
 
     private static let optionTapHoldDuration: TimeInterval = 0.025
     private static let optionDoubleTapInterval: TimeInterval = 0.07
+    private static let optionReleaseSettleDuration: TimeInterval = 0.02
+
+    private static let eventSource: CGEventSource? = {
+        let source = CGEventSource(stateID: .hidSystemState)
+        source?.localEventsSuppressionInterval = 0
+        return source
+    }()
 
     /// 发送一次左 Option 的 flagsChanged 事件。`isDown` 为 true 表示按下、false 表示抬起。
     static func postLeftOption(isDown: Bool) {
         guard let event = CGEvent(
-            keyboardEventSource: nil,
+            keyboardEventSource: eventSource,
             virtualKey: leftOptionKeyCode,
             keyDown: isDown
         ) else {
@@ -31,12 +39,7 @@ enum KeyboardSimulator {
 
         // CGEvent 默认是 keyDown/keyUp，强制转成 flagsChanged。
         event.type = .flagsChanged
-
-        var flags = rawMaskNonCoalesced
-        if isDown {
-            flags |= rawMaskAlternate | rawMaskDeviceLeftAlternate
-        }
-        event.flags = CGEventFlags(rawValue: flags)
+        event.flags = leftOptionFlags(isDown: isDown)
 
         event.post(tap: .cghidEventTap)
     }
@@ -56,10 +59,51 @@ enum KeyboardSimulator {
             Logger.shared.debug("发送豆包语音快捷键：左 Option 双击")
             tapLeftOptionOnce {
                 DispatchQueue.main.asyncAfter(deadline: .now() + optionDoubleTapInterval) {
-                    tapLeftOptionOnce(completion: completion)
+                    tapLeftOptionOnce {
+                        ensureLeftOptionReleased(completion: completion)
+                    }
                 }
             }
         }
+    }
+
+    private static func leftOptionFlags(isDown: Bool) -> CGEventFlags {
+        var flags = CGEventSource.flagsState(.combinedSessionState).rawValue
+
+        if isDown {
+            flags |= rawMaskAlternate | rawMaskDeviceLeftAlternate
+        } else {
+            flags &= ~rawMaskDeviceLeftAlternate
+            if flags & rawMaskDeviceRightAlternate == 0 {
+                flags &= ~rawMaskAlternate
+            }
+        }
+
+        flags |= rawMaskNonCoalesced
+        return CGEventFlags(rawValue: flags)
+    }
+
+    private static func ensureLeftOptionReleased(completion: (() -> Void)? = nil) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + optionReleaseSettleDuration) {
+            if leftOptionAppearsPressed() {
+                Logger.shared.warn("检测到左 Option 仍处于按下状态，补发抬起事件")
+                postLeftOption(isDown: false)
+            }
+            completion?()
+        }
+    }
+
+    private static func leftOptionAppearsPressed() -> Bool {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        let rawFlags = flags.rawValue
+
+        if rawFlags & rawMaskDeviceLeftAlternate != 0 {
+            return true
+        }
+        if rawFlags & rawMaskDeviceRightAlternate != 0 {
+            return false
+        }
+        return flags.contains(.maskAlternate)
     }
 
     // MARK: - 修饰键状态守门
