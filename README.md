@@ -102,6 +102,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 - 豆包输入法内的语音快捷键需要保持为「双击左 Option」。
 - 如果轻按 `Fn` 触发了 macOS 自带听写，去「系统设置 → 键盘 → 听写」关掉。
 - 如果按 `Fn` 弹出了 Emoji 选择器，去「系统设置 → 键盘 → 按下 🌐 键执行以下操作」改成「不执行任何操作」。
+- 使用 CleanShot X 等录屏软件开启「显示按键」时，画面里可能会看到合成出来的左 Option 键帽停留较久。这是录屏软件按键可视化层对模拟修饰键事件的显示问题，不代表系统里的 Option 真的一直按住；以实际输入法行为和日志中的释放状态为准。
 
 ## 技术栈
 
@@ -167,6 +168,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 3. **Fn 触发了系统的 Emoji 选择 / 听写**：在系统设置 → 键盘 → "按下 🌐 键..." 选成 "无操作"；如果是听写，也在系统设置 → 键盘 → 听写 关掉。
 4. **豆包语音没启动**：日志里看 `豆包输入法` 切换是否成功；豆包输入法的"语音输入"快捷键必须保持在"双击左 Option"。
 5. **Ctrl+Space 切换异常**：检查日志里 `currentSourceID` / `currentMethod`，如果你不是用鼠须管 / U.S.，需要改 `Sources/DoubaoVoiceApp/Controllers/DoubaoVoiceController.swift` 里的常量再重新 `./install-app.sh`。
+6. **录屏里显示 Option 一直按着**：如果只是在 CleanShot X 等录屏软件的按键显示层里看到 Option 键帽不消失，但实际输入法可以正常启动 / 停止、普通按键输入没有被 Option 修饰，那通常是录屏软件没有正确处理本 App 合成的修饰键 release。这个现象不影响真实使用；录屏时可以关闭「显示按键」来避免误导。
 
 ## 卸载
 
