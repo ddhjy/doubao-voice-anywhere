@@ -24,7 +24,7 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 时间常量（单位：秒）
 
-    private let actionAfterFnUpDelay: TimeInterval = 0.02
+    private let actionAfterFnUpDelay: TimeInterval = 0.2
     private let voiceTriggerAfterSwitchDelay: TimeInterval = 0.08
     private let inputSourceSwitchTimeout: TimeInterval = 2.0
     private let inputSourcePollInterval: TimeInterval = 0.01
