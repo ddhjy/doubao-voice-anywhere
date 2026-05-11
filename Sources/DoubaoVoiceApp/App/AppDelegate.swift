@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         installStatusItem()
         observeAlerts()
+        refreshLoginItemIfNeeded()
 
         eventTap.delegate = voiceController
         voiceController.setUp()
@@ -138,6 +139,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preferencesItem.target = self
         menu.addItem(preferencesItem)
 
+        let launchAtLoginItem = NSMenuItem(title: "登录时自动启动", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
+        launchAtLoginItem.target = self
+        launchAtLoginItem.state = LoginItemManager.isEnabled ? .on : .off
+        menu.addItem(launchAtLoginItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let logItem = NSMenuItem(title: "在 Finder 中显示日志", action: #selector(revealLog(_:)), keyEquivalent: "l")
@@ -158,7 +164,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refreshMenu() {
-        statusItem?.menu = buildMenu()
+        let menu = buildMenu()
+        menu.delegate = self
+        statusItem?.menu = menu
+    }
+
+    private func refreshLoginItemIfNeeded() {
+        do {
+            try LoginItemManager.refreshIfEnabled()
+        } catch {
+            Logger.shared.warn("刷新自启动配置失败: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - 监听重试
@@ -205,6 +221,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preferencesWindowController.showWindow(sender)
     }
 
+    @objc private func toggleLaunchAtLogin(_ sender: Any?) {
+        let shouldEnable = !LoginItemManager.isEnabled
+        do {
+            try LoginItemManager.setEnabled(shouldEnable)
+        } catch {
+            Logger.shared.error("切换自启动失败: \(error.localizedDescription)")
+            showMessage(
+                "自启动设置失败",
+                informativeText: error.localizedDescription
+            )
+        }
+        refreshMenu()
+    }
+
     @objc private func restartTap(_ sender: Any?) {
         eventTap.stop()
         if !startEventTapWithRetry() {
@@ -231,6 +261,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         纯原生 macOS App，不依赖 Hammerspoon 等任何脚本运行时。
         """
+        alert.addButton(withTitle: "好")
+        alert.runModal()
+    }
+
+    private func showMessage(_ messageText: String, informativeText: String) {
+        let alert = NSAlert()
+        alert.messageText = messageText
+        alert.informativeText = informativeText
         alert.addButton(withTitle: "好")
         alert.runModal()
     }

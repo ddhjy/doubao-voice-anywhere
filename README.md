@@ -34,6 +34,7 @@ cd Doubao-ime-hammerspoon
 
 脚本会编译并打包出 `dist/豆包语音输入助手.app`，再把 App 装到 `~/Applications/豆包语音输入助手.app`，然后自动启动。
 启动后会在屏幕右上角的菜单栏出现一个麦克风图标；从这里可以看当前输入源、手动触发豆包语音、查看日志等。
+需要登录后自动启动时，在菜单栏里勾选「登录时自动启动」。
 
 第一次运行需要在「系统设置 → 隐私与安全性 → 辅助功能」里把「豆包语音输入助手」打勾，然后回到菜单栏点一次「重新启动事件监听」即可生效。
 App 会用固定的开发者证书签名，辅助功能授权会跟随这个稳定身份；以后重新执行 `./install-app.sh` 覆盖安装，不需要重复授权。如果换了签名证书，macOS 会把它视为另一个可信主体，需要重新授权一次。
@@ -124,6 +125,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 | 切换到豆包输入法 | 仅切输入源、不触发语音 |
 | 恢复到上次输入法 | 把刚刚被切到豆包之前的输入源恢复回来 |
 | 输入源补丁配置… | 配置哪些 App 需要通过短暂焦点刷新来修复输入法切换 |
+| 登录时自动启动 | 勾选后写入当前用户的 LaunchAgent，下次登录自动启动 |
 | 在 Finder 中显示日志 | 打开 `~/Library/Logs/DoubaoVoiceApp/app.log` |
 | 关于 | 简单说明 |
 | 退出 | 退出 App |
@@ -175,6 +177,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 ```bash
 osascript -e 'tell application "DoubaoVoiceApp" to quit' || pkill -x DoubaoVoiceApp
 rm -rf ~/Applications/豆包语音输入助手.app
+rm -f ~/Library/LaunchAgents/com.doubaovoiceapp.menubar.autostart.plist
 rm -rf ~/Library/Logs/DoubaoVoiceApp
 # 系统设置 → 隐私与安全性 → 辅助功能：把"豆包语音输入助手"那一项移除
 ```
