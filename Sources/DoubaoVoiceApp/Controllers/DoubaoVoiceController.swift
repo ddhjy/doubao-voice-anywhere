@@ -249,7 +249,7 @@ final class DoubaoVoiceController: EventTapDelegate {
             self.waitForDoubaoIME(onTimeout: {
                 self.finishVoiceTransition()
             }) {
-                KeyboardSimulator.doubleTapLeftOption {
+                KeyboardSimulator.tapLeftOption {
                     self.doubaoVoiceActive = true
                     self.finishVoiceTransition()
                     Logger.shared.debug("豆包语音输入已启动，等待再次按 Fn 停止")
@@ -277,7 +277,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func stopDoubaoVoice() {
-        KeyboardSimulator.doubleTapLeftOption {
+        KeyboardSimulator.tapLeftOption {
             self.doubaoVoiceActive = false
             self.scheduleRestorePreviousIME(reason: "豆包语音输入已停止")
             self.finishVoiceTransition()

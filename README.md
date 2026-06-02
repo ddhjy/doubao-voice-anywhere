@@ -60,7 +60,7 @@ CODE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./install-app.
 ## 怎么用
 
 1. 在系统设置里给「豆包语音输入助手」勾上「辅助功能」权限。
-2. 轻按一次 `Fn`：等待约 0.2 秒 → 自动切到豆包输入法 → 双击左 Option 启动豆包语音。
+2. 轻按一次 `Fn`：等待约 0.2 秒 → 自动切到豆包输入法 → 单击左 Option 启动豆包语音。
 3. 说完后再轻按一次 `Fn`：等待约 0.2 秒 → 结束语音 → 自动切回原输入法。
 4. 日常按 `Ctrl+Space`：只在配置好的中文输入法 / 英文键盘之间切换，不会切到豆包。
 
@@ -85,7 +85,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 
 - 用 `CGEventTap` 监听全局 `flagsChanged` 和 `keyDown`，识别"轻按 Fn"和 `Ctrl+Space`。
 - 用 Carbon `TextInputSources` (TIS) 切换输入法 / 键盘布局。
-- 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 双击；事件序列保持为真实双击形态：down/up/down/up。
+- 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 单击；事件序列为 down/up。
 - 全程不依赖 Hammerspoon 或任何脚本运行时，纯 Swift + AppKit + Carbon。
 
 ## 适合谁
@@ -100,7 +100,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 - 只支持 macOS（最低 macOS 12）。
 - 需要你已经安装豆包输入法。
 - 需要给「豆包语音输入助手」开「辅助功能」权限，否则没法监听 / 模拟按键。
-- 豆包输入法内的语音快捷键需要保持为「双击左 Option」。
+- 豆包输入法内的语音快捷键需要保持为「单击左 Option」。
 - 如果轻按 `Fn` 触发了 macOS 自带听写，去「系统设置 → 键盘 → 听写」关掉。
 - 如果按 `Fn` 弹出了 Emoji 选择器，去「系统设置 → 键盘 → 按下 🌐 键执行以下操作」改成「不执行任何操作」。
 - 使用 CleanShot X 等录屏软件开启「显示按键」时，画面里可能会看到合成出来的左 Option 键帽停留较久。这是录屏软件按键可视化层对模拟修饰键事件的显示问题，不代表系统里的 Option 真的一直按住；以实际输入法行为和日志中的释放状态为准。
@@ -157,7 +157,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
     │   └── InputSource.swift           # 输入源描述
     ├── Services/
     │   ├── InputSourceManager.swift    # Carbon TIS 包装
-    │   ├── KeyboardSimulator.swift     # 左 Option 双击
+    │   ├── KeyboardSimulator.swift     # 左 Option 单击
     │   └── PermissionManager.swift     # AX 权限
     └── Utilities/
         └── Logger.swift                # stderr + 文件日志
@@ -168,7 +168,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 1. **菜单栏没出现图标**：检查 `~/Library/Logs/DoubaoVoiceApp/app.log` 是否有 `DoubaoVoiceApp 启动` 字样。如果没有，先确认 `./install-app.sh` 的签名步骤是否成功，或用 `CODE_SIGN_IDENTITY="..." ./install-app.sh` 指定本机可用证书。
 2. **按 Fn 没反应**：菜单栏检查"辅助功能权限：未授予"是不是还在；点击它跳转设置授权；授权后再点"重新启动事件监听"。
 3. **Fn 触发了系统的 Emoji 选择 / 听写**：在系统设置 → 键盘 → "按下 🌐 键..." 选成 "无操作"；如果是听写，也在系统设置 → 键盘 → 听写 关掉。
-4. **豆包语音没启动**：日志里看 `豆包输入法` 切换是否成功；豆包输入法的"语音输入"快捷键必须保持在"双击左 Option"。
+4. **豆包语音没启动**：日志里看 `豆包输入法` 切换是否成功；豆包输入法的"语音输入"快捷键必须保持在"单击左 Option"。
 5. **Ctrl+Space 切换异常**：检查日志里 `currentSourceID` / `currentMethod`，如果你不是用鼠须管 / U.S.，需要改 `Sources/DoubaoVoiceApp/Controllers/DoubaoVoiceController.swift` 里的常量再重新 `./install-app.sh`。
 6. **录屏里显示 Option 一直按着**：如果只是在 CleanShot X 等录屏软件的按键显示层里看到 Option 键帽不消失，但实际输入法可以正常启动 / 停止、普通按键输入没有被 Option 修饰，那通常是录屏软件没有正确处理本 App 合成的修饰键 release。这个现象不影响真实使用；录屏时可以关闭「显示按键」来避免误导。
 
