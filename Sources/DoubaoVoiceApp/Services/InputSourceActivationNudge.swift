@@ -2,20 +2,33 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-/// 通过短暂激活一个极小窗口，强制前台 App 刷新当前输入源。
+/// 通过让一个「不激活本 App」的小面板短暂成为 key window，强制前台 App 刷新当前输入源。
 ///
-/// 参考 macism 的做法：对 CJKV 输入法，单纯调用 `TISSelectInputSource` 有时只会更新菜单栏，
-/// 不会让 Electron 等 App 的文本输入上下文立刻生效。制造一次极短的 App 焦点切换可以刷新它。
+/// 背景：对 CJKV 输入法，单纯调用 `TISSelectInputSource` 有时只会更新菜单栏，
+/// 不会让 Electron 等 App 的文本输入上下文立刻生效，需要一次焦点变化来刷新（参考 macism）。
+/// 但 macism 式的「激活自己再切回去」会让前台 App 短暂失活，Electron 应用（如 Mira）
+/// 会因此丢掉输入框焦点，用户得重新点回输入框。
+/// 这里改用 `.nonactivatingPanel`：前台 App 全程保持 active，只有 key window 短暂换手到面板；
+/// 面板关闭后系统把 key window 还给前台 App，文本输入上下文重新激活时即拿到新输入源，
+/// 输入框焦点不丢。
 final class InputSourceActivationNudge {
+
+    /// 能成为 key window 但绝不激活本 App 的面板。
+    private final class KeyableNudgePanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+        override var canBecomeMain: Bool { false }
+    }
 
     static let shared = InputSourceActivationNudge()
 
     private let windowSize = CGSize(width: 3, height: 3)
     private let windowMargin: CGFloat = 8
-    private let activationHoldDuration: TimeInterval = 0.001
-    private let foregroundReturnDelay: TimeInterval = 0.05
+    /// 面板持有 key window 的时长：太短的话 key 焦点换手会被窗口服务器合并掉，
+    /// 前台 App 收不到 resign/become key，输入上下文就不会刷新。
+    private let keyWindowHoldDuration: TimeInterval = 0.05
+    private let keyWindowReturnDelay: TimeInterval = 0.05
 
-    private var window: NSWindow?
+    private var panel: NSPanel?
     private var completions: [() -> Void] = []
     private var isRunning = false
 
@@ -63,42 +76,47 @@ final class InputSourceActivationNudge {
         let x = screenRect.maxX - windowSize.width - windowMargin
         let y = screenRect.minY + windowMargin
 
-        let window = NSWindow(
+        let panel = KeyableNudgePanel(
             contentRect: NSRect(origin: CGPoint(x: x, y: y), size: windowSize),
-            styleMask: [.titled],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        window.isReleasedWhenClosed = false
-        window.isOpaque = true
-        window.backgroundColor = .purple
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.level = .screenSaver
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        panel.isReleasedWhenClosed = false
+        panel.isOpaque = true
+        panel.backgroundColor = .purple
+        panel.level = .screenSaver
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        panel.animationBehavior = .none
+        panel.hidesOnDeactivate = false
+        panel.ignoresMouseEvents = true
 
-        self.window = window
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        self.panel = panel
+        // 只接管 key window，不调用 NSApp.activate：前台 App 保持 active，输入框焦点不受影响。
+        panel.makeKeyAndOrderFront(nil)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + activationHoldDuration) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + keyWindowHoldDuration) { [weak self] in
             self?.finish(previousApp: previousApp, description: description)
         }
     }
 
     private func finish(previousApp: NSRunningApplication?, description: String) {
-        window?.orderOut(nil)
-        window?.close()
-        window = nil
+        panel?.orderOut(nil)
+        panel?.close()
+        panel = nil
 
+        // 正常情况下前台 App 从未失活，面板关掉后系统会自动把 key window 还给它；
+        // 仅在它意外失活时才显式拉回，避免多余的激活动作再去碰它的焦点。
         let currentBundleID = Bundle.main.bundleIdentifier
         if let previousApp = previousApp,
            previousApp.bundleIdentifier != currentBundleID,
-           !previousApp.isTerminated {
+           !previousApp.isTerminated,
+           !previousApp.isActive {
+            Logger.shared.debug("输入源激活补丁: 前台应用意外失活，重新激活 \(previousApp.localizedName ?? "未知应用")")
             previousApp.activate(options: [.activateIgnoringOtherApps])
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + foregroundReturnDelay) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + keyWindowReturnDelay) { [weak self] in
             guard let self = self else { return }
             let callbacks = self.completions
             self.completions.removeAll()

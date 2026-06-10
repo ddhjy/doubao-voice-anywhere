@@ -77,7 +77,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 
 每个目标都同时记 `sourceID`，避免不同 locale 下读到的本地化名称不一致（比如鼠须管在 zh-Hans 下显示为「鼠须管」而非 `Squirrel`）。
 
-部分 Electron App 会出现「菜单栏输入法已切换，但应用内输入框没有真正切换」的问题。项目可以对指定 App 启用一次极短的焦点刷新；这个逻辑可能让部分 App 闪一下，所以默认不会对所有 App 生效。需要启用时，从菜单栏打开「输入源补丁配置…」，点击「添加应用…」选择对应 `.app`，或手动添加 Bundle ID（例如 Mira 是 `net.byteintl.mira`）。
+部分 Electron App 会出现「菜单栏输入法已切换，但应用内输入框没有真正切换」的问题。项目可以对指定 App 启用一次极短的输入上下文刷新：用一个不激活本 App 的小面板短暂接管 key window 再还回去，前台 App 全程保持激活，输入框焦点不会丢。这个刷新默认不对所有 App 生效；需要启用时，从菜单栏打开「应用兼容性设置…」，点击「添加应用…」选择对应 `.app`，或手动添加 Bundle ID（例如 Mira 是 `net.byteintl.mira`）。
 
 如果你不是用鼠须管，把 [`Sources/DoubaoVoiceApp/Controllers/DoubaoVoiceController.swift`](./Sources/DoubaoVoiceApp/Controllers/DoubaoVoiceController.swift) 顶部的常量改成你的输入法 ID / 名称，再 `./install-app.sh` 重新安装即可。同一文件顶部还集中了所有时序常量（`actionAfterFnUpDelay`、`voiceTriggerAfterSwitchDelay`、`restoreAfterVoiceStopDelay` 等），需要微调豆包语音触发时机时改这里就够了。
 
@@ -124,7 +124,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 | 切换豆包语音（等价于按 Fn） | 没法按 Fn 时也能手动触发 |
 | 切换到豆包输入法 | 仅切输入源、不触发语音 |
 | 恢复到上次输入法 | 把刚刚被切到豆包之前的输入源恢复回来 |
-| 输入源补丁配置… | 配置哪些 App 需要通过短暂焦点刷新来修复输入法切换 |
+| 应用兼容性设置… | 配置哪些 App 需要通过短暂的输入上下文刷新来修复输入法切换 |
 | 登录时自动启动 | 勾选后写入当前用户的 LaunchAgent，下次登录自动启动 |
 | 在 Finder 中显示日志 | 打开 `~/Library/Logs/DoubaoVoiceApp/app.log` |
 | 关于 | 简单说明 |
