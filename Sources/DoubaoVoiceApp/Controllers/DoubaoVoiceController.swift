@@ -40,13 +40,31 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 状态
 
+    // 以下状态只在主线程访问。
     private var previousInputSource: InputSource?
     private var sourceBeforeFnTap: InputSource?
     private var lastNonDoubaoInputSource: InputSource?
-    private(set) var doubaoVoiceActive: Bool = false
     private var voiceTransitionInProgress: Bool = false
+
+    // 以下状态只在事件监听线程访问（EventTapDelegate 回调都在该线程上）。
     private var fnIsDown: Bool = false
     private var fnWasUsedWithOtherKey: Bool = false
+
+    // 主线程写、事件监听线程读，用锁保护。
+    private let voiceActiveLock = NSLock()
+    private var _doubaoVoiceActive = false
+    private(set) var doubaoVoiceActive: Bool {
+        get {
+            voiceActiveLock.lock()
+            defer { voiceActiveLock.unlock() }
+            return _doubaoVoiceActive
+        }
+        set {
+            voiceActiveLock.lock()
+            _doubaoVoiceActive = newValue
+            voiceActiveLock.unlock()
+        }
+    }
 
     private var pendingActionTimer: DispatchWorkItem?
     private var restoreImeTimer: DispatchWorkItem?
@@ -101,30 +119,41 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     // MARK: - EventTapDelegate
+    //
+    // 这些回调运行在事件监听线程上，必须立即返回：
+    // 只做键码/flags 判断和轻量状态更新，任何可能阻塞的调用（TIS、日志外的 IO）
+    // 都派发到主队列异步执行。回调里一旦卡超过约 1 秒，系统会禁用整个 tap，
+    // 造成"按 Fn 没反应"。
 
     func handleFlagsChanged(event: CGEvent) -> Bool {
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
         // 我们只关心 Fn 键（keycode 63）。其它修饰键透传，避免误吞。
         guard keycode == keyCodeFn else { return false }
 
-        let flags = event.flags
-        let fnPressed = flags.contains(.maskSecondaryFn)
+        let fnPressed = event.flags.contains(.maskSecondaryFn)
 
         if fnPressed && !fnIsDown {
             fnIsDown = true
             fnWasUsedWithOtherKey = false
-            sourceBeforeFnTap = InputSourceManager.nowSource()
+            // TIS 读取可能阻塞（服务冷启动时长达秒级），不能放在回调里。
+            DispatchQueue.main.async { [weak self] in
+                self?.sourceBeforeFnTap = InputSourceManager.nowSource()
+            }
             return true
         }
 
         if !fnPressed && fnIsDown {
             fnIsDown = false
-            if !fnWasUsedWithOtherKey {
-                scheduleDoubaoToggle()
-            } else {
-                sourceBeforeFnTap = nil
-            }
+            let usedWithOtherKey = fnWasUsedWithOtherKey
             fnWasUsedWithOtherKey = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                if usedWithOtherKey {
+                    self.sourceBeforeFnTap = nil
+                } else {
+                    self.scheduleDoubaoToggle()
+                }
+            }
             return true
         }
 
@@ -145,7 +174,9 @@ final class DoubaoVoiceController: EventTapDelegate {
 
         if doubaoVoiceActive {
             if !isRepeat {
-                markDoubaoVoiceStoppedByExternalActivity("检测到键盘输入 \(keycode) 结束豆包语音")
+                DispatchQueue.main.async { [weak self] in
+                    self?.markDoubaoVoiceStoppedByExternalActivity("检测到键盘输入 \(keycode) 结束豆包语音")
+                }
             }
             return false
         }
@@ -162,16 +193,31 @@ final class DoubaoVoiceController: EventTapDelegate {
         guard onlyControl else { return false }
 
         if !isRepeat {
-            toggleNormalInputSource()
+            DispatchQueue.main.async { [weak self] in
+                self?.toggleNormalInputSource()
+            }
         }
         return true
     }
 
     func handleMouseDown(event: CGEvent, type: CGEventType) -> Bool {
         if doubaoVoiceActive {
-            markDoubaoVoiceStoppedByExternalActivity("检测到鼠标点击 \(type) 结束豆包语音")
+            DispatchQueue.main.async { [weak self] in
+                self?.markDoubaoVoiceStoppedByExternalActivity("检测到鼠标点击 \(type) 结束豆包语音")
+            }
         }
         return false
+    }
+
+    /// tap 被系统禁用又恢复后调用（事件监听线程）。
+    /// 禁用期间可能只收到了 Fn down 而丢了 Fn up，把按键跟踪状态清零，
+    /// 避免 fnIsDown 卡死导致后续轻按被误判成"Fn+其它键"。
+    func eventTapWasInterrupted() {
+        fnIsDown = false
+        fnWasUsedWithOtherKey = false
+        DispatchQueue.main.async { [weak self] in
+            self?.sourceBeforeFnTap = nil
+        }
     }
 
     private func isFnKeyDownEvent(_ keycode: Int64) -> Bool {
@@ -181,6 +227,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     // MARK: - Fn 单按调度
 
     private func scheduleDoubaoToggle() {
+        Logger.shared.debug("检测到 Fn 轻按，\(actionAfterFnUpDelay)s 后切换豆包语音")
         cancelPendingActionTimer()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }

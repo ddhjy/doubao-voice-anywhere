@@ -30,6 +30,7 @@ final class Logger {
         {
             try? fm.createDirectory(at: logsDir, withIntermediateDirectories: true)
             let url = logsDir.appendingPathComponent("app.log")
+            Self.rotateIfNeeded(at: url, in: logsDir, fileManager: fm)
             if !fm.fileExists(atPath: url.path) {
                 fm.createFile(atPath: url.path, contents: nil)
             }
@@ -40,6 +41,21 @@ final class Logger {
             fileURL = nil
             fileHandle = nil
         }
+    }
+
+    /// 启动时做一次大小检查：超过上限就把当前日志挪到 app.log.1（只保留一份归档），
+    /// 避免日志无限增长。
+    private static let maxLogFileSize: UInt64 = 20 * 1024 * 1024
+
+    private static func rotateIfNeeded(at url: URL, in logsDir: URL, fileManager fm: FileManager) {
+        guard let attributes = try? fm.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? UInt64,
+              size > maxLogFileSize
+        else { return }
+
+        let backupURL = logsDir.appendingPathComponent("app.log.1")
+        try? fm.removeItem(at: backupURL)
+        try? fm.moveItem(at: url, to: backupURL)
     }
 
     var logFilePath: String? { fileURL?.path }

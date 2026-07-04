@@ -83,7 +83,8 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 
 ## 它是怎么工作的
 
-- 用 `CGEventTap` 监听全局 `flagsChanged` 和 `keyDown`，识别"轻按 Fn"和 `Ctrl+Space`。
+- 用 `CGEventTap` 监听全局 `flagsChanged` 和 `keyDown`，识别"轻按 Fn"和 `Ctrl+Space`。监听跑在独立线程上，回调内不做任何可能阻塞的调用；tap 被系统禁用时立即自动重启，另有周期看门狗兜底。
+- 进程通过 `NSProcessInfo.beginActivity` 退出 App Nap，避免闲置后第一次按 Fn 因进程被降频而无响应（不阻止系统正常休眠）。
 - 用 Carbon `TextInputSources` (TIS) 切换输入法 / 键盘布局。
 - 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 单击；事件序列为 down/up。
 - 全程不依赖 Hammerspoon 或任何脚本运行时，纯 Swift + AppKit + Carbon。
@@ -109,7 +110,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 
 - Swift 5.9 + SwiftPM 可执行包，单文件 `Package.swift`
 - 输入源切换：Carbon `TextInputSources` (TIS)
-- 全局键盘事件：`CGEventTap`（`flagsChanged` + `keyDown`）
+- 全局键盘事件：`CGEventTap`（`flagsChanged` + `keyDown`，独立线程 + 禁用自动恢复 + 看门狗巡检）
 - 模拟左 Option：使用 combined-session `flagsChanged` 事件，并在 HID / combined session 两层状态里确认释放
 - 菜单栏宿主：`NSStatusItem` + `LSUIElement = true`
 - 不依赖 Xcode 工程；编译产物用 shell 脚本直接组装成 `.app` bundle 并使用固定开发者证书签名

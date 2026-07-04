@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var permissionRetryTimer: Timer?
+    private var keepAliveActivity: NSObjectProtocol?
     private lazy var preferencesWindowController = PreferencesWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,6 +16,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let path = Logger.shared.logFilePath {
             Logger.shared.info("日志文件: \(path)")
         }
+
+        // 后台菜单栏 App 闲置后会进入 App Nap，被降频/挂起的进程来不及响应
+        // 事件回调，第一次按 Fn 会因 tap 超时被系统放行（表现为"没反应"）。
+        // 这里申请常驻活跃退出 App Nap；AllowingIdleSystemSleep 不阻止系统正常休眠。
+        keepAliveActivity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "保持全局键盘事件监听即时响应"
+        )
+        Logger.shared.info("已申请退出 App Nap，保证闲置后第一次 Fn 即时响应")
 
         installStatusItem()
         observeAlerts()
