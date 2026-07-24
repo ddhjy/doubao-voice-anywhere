@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         observeAlerts()
         refreshLoginItemIfNeeded()
 
+        InputSourceActivationNudgeSettings.seedDefaultBundleIDsIfNeeded()
+
         eventTap.delegate = voiceController
         voiceController.setUp()
 

@@ -5,6 +5,19 @@ enum InputSourceActivationNudgeSettings {
     static let changedNotification = Notification.Name("InputSourceActivationNudgeSettings.changed")
 
     private static let bundleIDsKey = "InputSourceActivationNudgeBundleIDs"
+    private static let seededDefaultsKey = "InputSourceActivationNudgeSeededDefaults_v1"
+
+    /// Electron 类应用切完输入法后文本上下文经常滞后，把已确认受影响的应用
+    /// 一次性补进白名单（用户仍可在设置界面移除，之后不会再自动加回来）。
+    static func seedDefaultBundleIDsIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: seededDefaultsKey) else { return }
+        defaults.set(true, forKey: seededDefaultsKey)
+
+        for bundleID in ["notion.id"] where !bundleIDs.contains(bundleID) {
+            add(bundleID: bundleID)
+        }
+    }
 
     static var bundleIDs: Set<String> {
         get {

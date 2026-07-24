@@ -87,6 +87,7 @@ static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
 - 进程通过 `NSProcessInfo.beginActivity` 退出 App Nap，避免闲置后第一次按 Fn 因进程被降频而无响应（不阻止系统正常休眠）。
 - 用 Carbon `TextInputSources` (TIS) 切换输入法 / 键盘布局。
 - 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 单击；事件序列为 down/up。
+- 左 Option 单击对豆包来说既是"开始"也是"结束"，为了不让内部状态和豆包真实状态反转（豆包会因静音超时自行结束录音；Electron 应用的输入上下文滞后还会让单击落空），App 用 `CGWindowList` 探测豆包输入法进程的语音胶囊窗口作为真值源：启动后确认胶囊出现（没出现则强制焦点刷新并重发一次）、录音中周期巡检胶囊是否还在、停止前发现胶囊已消失就跳过单击。探测不可用时（比如豆包改版）自动退回旧的盲切换行为。
 - 全程不依赖 Hammerspoon 或任何脚本运行时，纯 Swift + AppKit + Carbon。
 
 ## 适合谁

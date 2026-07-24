@@ -31,6 +31,14 @@ final class DoubaoVoiceController: EventTapDelegate {
     private let inputMethodBridgeDelay: TimeInterval = 0.15
     private let restoreAfterVoiceStopDelay: TimeInterval = 1.0
 
+    /// Option 单击发出后等待语音胶囊出现的时长（实测正常 0.2-0.6s 内出现）。
+    private let hudAppearTimeout: TimeInterval = 1.2
+    private let hudPollInterval: TimeInterval = 0.06
+    /// 录音中巡检语音胶囊的周期；连续缺席两次（约 1s）才认定豆包已自行结束，
+    /// 容忍胶囊在「准备录音 → 波形 → 识别中」形态切换时的短暂消失。
+    private let hudWatchInterval: TimeInterval = 0.5
+    private let hudWatchMissThreshold = 2
+
     // MARK: - 键码常量
 
     private let keyCodeFn: Int64 = 63
@@ -68,6 +76,14 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     private var pendingActionTimer: DispatchWorkItem?
     private var restoreImeTimer: DispatchWorkItem?
+
+    // 语音胶囊探测（主线程访问）。
+    // hudDetectionProven：本次进程运行期间是否成功观测到过胶囊。观测到过，
+    // 才敢把「胶囊不在」当作「豆包没在录音」的依据；否则（豆包改版、进程没找到）
+    // 一律退回旧的盲切换行为，探测失效时行为不会比从前更差。
+    private var hudDetectionProven = false
+    private var hudWatchTimer: DispatchSourceTimer?
+    private var hudWatchMissCount = 0
 
     private var inputSourceObserver: NSObjectProtocol?
 
@@ -115,6 +131,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
         cancelPendingActionTimer()
         cancelRestoreImeTimer()
+        stopHudWatch()
         voiceTransitionInProgress = false
     }
 
@@ -229,6 +246,9 @@ final class DoubaoVoiceController: EventTapDelegate {
     private func scheduleDoubaoToggle() {
         Logger.shared.debug("检测到 Fn 轻按，\(actionAfterFnUpDelay)s 后切换豆包语音")
         cancelPendingActionTimer()
+        // 立刻取消挂起的输入法恢复：否则「停止后 0.8-1.0s 内再按 Fn」时，
+        // 恢复计时器会赶在本次切换前触发，把输入法闪切回去再切回豆包。
+        cancelRestoreImeTimer()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.pendingActionTimer = nil
@@ -279,7 +299,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         if previousInputSource == nil {
             previousInputSource = lastNonDoubaoInputSource
         }
-        restorePreviousIME()
+        restorePreviousIME(force: true)
     }
 
     private func startDoubaoVoice() {
@@ -296,11 +316,7 @@ final class DoubaoVoiceController: EventTapDelegate {
             self.waitForDoubaoIME(onTimeout: {
                 self.finishVoiceTransition()
             }) {
-                KeyboardSimulator.tapLeftOption {
-                    self.doubaoVoiceActive = true
-                    self.finishVoiceTransition()
-                    Logger.shared.debug("豆包语音输入已启动，等待再次按 Fn 停止")
-                }
+                self.fireVoiceStartTap(allowRetry: true)
             }
         }
 
@@ -324,6 +340,19 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func stopDoubaoVoice() {
+        stopHudWatch()
+
+        // 豆包早已不在录音（静音自动退出、上次启动其实没成功等）时，
+        // 绝不能再发 Option 单击——那会反向拉起一段新录音，
+        // 然后又被 1s 后的输入法恢复杀掉，表现成「触发了立刻又消失」。
+        if hudDetectionProven && !hudVisibleNow() {
+            Logger.shared.debug("语音胶囊已不在屏，跳过停止单击，直接恢复输入法")
+            doubaoVoiceActive = false
+            scheduleRestorePreviousIME(reason: "豆包语音已自行结束")
+            finishVoiceTransition()
+            return
+        }
+
         KeyboardSimulator.tapLeftOption {
             self.doubaoVoiceActive = false
             self.scheduleRestorePreviousIME(reason: "豆包语音输入已停止")
@@ -336,8 +365,122 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func markDoubaoVoiceStoppedByExternalActivity(_ reason: String) {
+        stopHudWatch()
         doubaoVoiceActive = false
         scheduleRestorePreviousIME(reason: reason)
+    }
+
+    // MARK: - 启动确认与录音巡检（语音胶囊真值）
+
+    /// 发送启动用的 Option 单击，并用语音胶囊确认豆包真的开始录音了。
+    ///
+    /// 单击可能落空：Electron 应用（Notion 等）的文本输入上下文经常滞后于
+    /// TIS 切换，按键发出时上下文还挂在旧输入法上，豆包收不到。以前这里盲目
+    /// 把状态置成「录音中」，一旦落空，后续每次 Fn 的语义都是反的。
+    private func fireVoiceStartTap(allowRetry: Bool) {
+        KeyboardSimulator.tapLeftOption {
+            self.verifyVoiceStarted(
+                deadline: Date(timeIntervalSinceNow: self.hudAppearTimeout),
+                allowRetry: allowRetry
+            )
+        }
+    }
+
+    private func verifyVoiceStarted(deadline: Date, allowRetry: Bool) {
+        if hudVisibleNow() {
+            doubaoVoiceActive = true
+            finishVoiceTransition()
+            startHudWatch()
+            Logger.shared.debug("豆包语音输入已启动（语音胶囊已确认出现），等待再次按 Fn 停止")
+            return
+        }
+
+        if Date() < deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + hudPollInterval) { [weak self] in
+                self?.verifyVoiceStarted(deadline: deadline, allowRetry: allowRetry)
+            }
+            return
+        }
+
+        guard hudDetectionProven else {
+            // 从未成功观测到过胶囊：探测可能不适配当前豆包版本，退回旧的盲切换行为。
+            doubaoVoiceActive = true
+            finishVoiceTransition()
+            Logger.shared.warn("没探测到语音胶囊（本次运行从未观测到过，可能豆包界面有变化），按旧逻辑视为已启动。豆包在屏窗口: \(DoubaoVoiceHUDDetector.describeOnscreenWindows())")
+            return
+        }
+
+        if allowRetry {
+            Logger.shared.warn("Option 单击后语音胶囊没出现（前台应用输入上下文可能没跟上切换），强制焦点刷新后重发一次")
+            InputSourceActivationNudge.shared.performForced(description: "豆包语音启动重试") { [weak self] in
+                guard let self = self else { return }
+                guard self.isDoubaoIMEActive() else {
+                    Logger.shared.warn("重试时当前输入法已不是豆包，放弃本次启动")
+                    self.doubaoVoiceActive = false
+                    self.finishVoiceTransition()
+                    return
+                }
+                self.fireVoiceStartTap(allowRetry: false)
+            }
+            return
+        }
+
+        // 重试也没拉起来：如实置为未启动，让下一次 Fn 走干净的启动流程，
+        // 不留下「App 以为在录音、豆包其实没在录」的脏状态。
+        doubaoVoiceActive = false
+        finishVoiceTransition()
+        showAlert("豆包语音没拉起来，请再按一次 Fn")
+    }
+
+    private func hudVisibleNow() -> Bool {
+        let visible = DoubaoVoiceHUDDetector.isHUDVisible()
+        if visible && !hudDetectionProven {
+            hudDetectionProven = true
+            Logger.shared.info("语音胶囊探测生效: \(DoubaoVoiceHUDDetector.describeOnscreenWindows())")
+        }
+        return visible
+    }
+
+    /// 录音期间周期巡检：豆包会因静音超时、Esc 等自行结束录音而不通知我们。
+    /// 胶囊连续缺席两个周期就同步状态并恢复输入法，避免状态反转。
+    private func startHudWatch() {
+        stopHudWatch()
+        guard hudDetectionProven else { return }
+
+        hudWatchMissCount = 0
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(
+            deadline: .now() + hudWatchInterval,
+            repeating: hudWatchInterval
+        )
+        timer.setEventHandler { [weak self] in
+            self?.hudWatchTick()
+        }
+        timer.resume()
+        hudWatchTimer = timer
+    }
+
+    private func stopHudWatch() {
+        hudWatchTimer?.cancel()
+        hudWatchTimer = nil
+        hudWatchMissCount = 0
+    }
+
+    private func hudWatchTick() {
+        guard doubaoVoiceActive else {
+            stopHudWatch()
+            return
+        }
+        if hudVisibleNow() {
+            hudWatchMissCount = 0
+            return
+        }
+        hudWatchMissCount += 1
+        guard hudWatchMissCount >= hudWatchMissThreshold else { return }
+
+        stopHudWatch()
+        doubaoVoiceActive = false
+        scheduleRestorePreviousIME(reason: "语音胶囊已消失（豆包自行结束了录音）")
     }
 
     private func scheduleRestorePreviousIME(reason: String) {
@@ -414,7 +557,22 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
-    private func restorePreviousIME() {
+    /// - Parameter force: true 表示用户显式要求恢复（菜单动作），跳过所有守卫。
+    private func restorePreviousIME(force: Bool = false) {
+        if !force {
+            // 恢复计时器可能晚到：新一轮 Fn 动作已经开始（或马上开始）时，
+            // 输入法归属权在那个流程手里，这里不要抢着切回去。
+            if voiceTransitionInProgress || pendingActionTimer != nil || doubaoVoiceActive {
+                Logger.shared.debug("有进行中的语音切换或录音，跳过本次输入法恢复")
+                return
+            }
+            // 用户已手动切走（或恢复早已生效）时不再强切，避免覆盖用户的选择。
+            guard isDoubaoIMEActive() else {
+                Logger.shared.debug("当前已不是豆包输入法，跳过输入法恢复")
+                previousInputSource = nil
+                return
+            }
+        }
         if previousInputSource == nil {
             Logger.shared.debug("没有记录到之前的输入来源，恢复到默认中文输入法")
         }

@@ -52,6 +52,21 @@ final class InputSourceActivationNudge {
         perform(description: description, previousApp: previousApp, completion: completion)
     }
 
+    /// 无视 App 白名单强制执行一次焦点刷新。
+    /// 用于「模拟按键已发出但豆包没反应」的补救场景：此时基本可以断定
+    /// 前台 App 的输入上下文没跟上 TIS 切换，即使它不在白名单里也需要刷新。
+    func performForced(
+        description: String,
+        completion: (() -> Void)? = nil
+    ) {
+        let previousApp = currentInteractionApplication()
+        guard InputSourceManager.currentSourceNeedsActivationNudge() else {
+            completion?()
+            return
+        }
+        perform(description: description, previousApp: previousApp, completion: completion)
+    }
+
     private func perform(
         description: String,
         previousApp: NSRunningApplication?,
