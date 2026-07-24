@@ -14,7 +14,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-BUNDLE_NAME="豆包语音输入助手.app"
+BUNDLE_NAME="豆包随时说.app"
+# 2026-07 改名前的包名；安装时自动退出旧进程并清理旧包
+LEGACY_BUNDLE_NAME="豆包语音输入助手.app"
 BUNDLE_ID="com.doubaovoiceapp.menubar"
 EXECUTABLE_NAME="DoubaoVoiceApp"
 DIST_BUNDLE="$SCRIPT_DIR/dist/$BUNDLE_NAME"
@@ -66,14 +68,19 @@ DIST_PROCESS_PATH="$DIST_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 kill_existing_instances() {
   local pids=()
   local pid
+  local paths=(
+    "$TARGET_PROCESS_PATH"
+    "$DIST_PROCESS_PATH"
+    "$HOME/Applications/$LEGACY_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
+    "/Applications/$LEGACY_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
+  )
 
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] && pids+=("$pid")
-  done < <(pgrep -f "$TARGET_PROCESS_PATH" || true)
-
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] && pids+=("$pid")
-  done < <(pgrep -f "$DIST_PROCESS_PATH" || true)
+  local path
+  for path in "${paths[@]}"; do
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && pids+=("$pid")
+    done < <(pgrep -f "$path" || true)
+  done
 
   if [[ ${#pids[@]} -gt 0 ]]; then
     info "检测到旧实例，正在退出"
@@ -81,6 +88,21 @@ kill_existing_instances() {
     sleep 1
     kill -9 "${pids[@]}" 2>/dev/null || true
   fi
+}
+
+# 清理改名前的旧包（显示名从「豆包语音输入助手」改为「豆包随时说」）。
+remove_legacy_bundles() {
+  local dir legacy
+  for dir in "$HOME/Applications" "/Applications"; do
+    legacy="$dir/$LEGACY_BUNDLE_NAME"
+    if [[ -d "$legacy" ]]; then
+      if rm -rf "$legacy" 2>/dev/null; then
+        info "已清理旧版本包：$legacy"
+      else
+        error "无法删除旧版本包：$legacy，请手动移除"
+      fi
+    fi
+  done
 }
 
 activate_installed_app() {
@@ -102,8 +124,9 @@ APPLESCRIPT
   return 1
 }
 
-# ---- 关闭旧实例 ----
+# ---- 关闭旧实例并清理旧名包 ----
 kill_existing_instances
+remove_legacy_bundles
 
 # ---- 复制 ----
 if [[ -d "$TARGET_BUNDLE" ]]; then
@@ -128,7 +151,7 @@ if [[ "$DO_LAUNCH" -eq 1 ]]; then
 
 第一次运行时：
   1. 系统会弹出"辅助功能"权限请求；点击"打开系统设置"，把
-     "豆包语音输入助手" 加入授权列表，并打开开关。
+     "豆包随时说" 加入授权列表，并打开开关。
   2. 授权后应用会自动开始监听（几秒内生效）；如果没生效，
      点菜单栏图标 -> "重新连接键盘监听"。
   3. 之后轻按一次 Fn 启动豆包语音；再按一次结束。

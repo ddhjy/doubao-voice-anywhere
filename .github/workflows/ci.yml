@@ -25,5 +25,5 @@ jobs:
 
       - name: Verify bundle
         run: |
-          codesign --verify --strict "dist/豆包语音输入助手.app"
-          plutil -lint "dist/豆包语音输入助手.app/Contents/Info.plist"
+          codesign --verify --strict "dist/豆包随时说.app"
+          plutil -lint "dist/豆包随时说.app/Contents/Info.plist"

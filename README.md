@@ -1,6 +1,6 @@
-# 豆包语音输入助手
+# 豆包随时说
 
-[![CI](https://github.com/ddhjy/doubao-voice-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/ddhjy/doubao-voice-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/ddhjy/doubao-voice-anywhere/actions/workflows/ci.yml/badge.svg)](https://github.com/ddhjy/doubao-voice-anywhere/actions/workflows/ci.yml)
 
 把豆包输入法留给它最有价值的部分：免费、好用的语音输入。
 把你真正顺手的输入法，继续留作主输入法。
@@ -34,14 +34,14 @@
 ## 安装
 
 ```bash
-git clone https://github.com/ddhjy/doubao-voice-bridge.git
-cd doubao-voice-bridge
+git clone https://github.com/ddhjy/doubao-voice-anywhere.git
+cd doubao-voice-anywhere
 ./install-app.sh
 ```
 
-脚本会编译打包出 `dist/豆包语音输入助手.app`，安装到 `~/Applications/` 并启动。启动后菜单栏会出现一个麦克风图标。
+脚本会编译打包出 `dist/豆包随时说.app`，安装到 `~/Applications/` 并启动。启动后菜单栏会出现一个麦克风图标。
 
-**第一次运行只需要做一件事**：在弹出的系统提示中打开「系统设置 → 隐私与安全性 → 辅助功能」，勾选「豆包语音输入助手」。授权后 App 会在几秒内自动开始监听（如果没生效，点菜单栏图标 →「重新连接键盘监听」）。
+**第一次运行只需要做一件事**：在弹出的系统提示中打开「系统设置 → 隐私与安全性 → 辅助功能」，勾选「豆包随时说」。授权后 App 会在几秒内自动开始监听（如果没生效，点菜单栏图标 →「重新连接键盘监听」）。
 
 然后就可以用了：**轻按一次 `Fn`，开始说话；再按一次，结束**。
 
@@ -208,12 +208,13 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 ## 卸载
 
 ```bash
-osascript -e 'tell application "DoubaoVoiceApp" to quit' || pkill -x DoubaoVoiceApp
-rm -rf ~/Applications/豆包语音输入助手.app
+pkill -x DoubaoVoiceApp
+rm -rf ~/Applications/豆包随时说.app
+rm -rf ~/Applications/豆包语音输入助手.app   # 从旧版本升级过的话，顺带清掉旧名残留
 rm -f ~/Library/LaunchAgents/com.doubaovoiceapp.menubar.autostart.plist
 rm -rf ~/Library/Logs/DoubaoVoiceApp
 defaults delete com.doubaovoiceapp.menubar 2>/dev/null || true
-# 系统设置 → 隐私与安全性 → 辅助功能：把"豆包语音输入助手"那一项移除
+# 系统设置 → 隐私与安全性 → 辅助功能：把"豆包随时说"那一项移除
 ```
 
 ## 许可证

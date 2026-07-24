@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 状态栏
 
-    private static let defaultStatusItemToolTip = "豆包语音输入助手 — 按 Fn 开始 / 结束语音输入"
+    private static let defaultStatusItemToolTip = "豆包随时说 — 按 Fn 开始 / 结束语音输入"
     private static let statusItemLength: CGFloat = 24.5
     private static let statusIconPointSize: CGFloat = 15.5
 
@@ -164,11 +164,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let aboutItem = NSMenuItem(title: "关于豆包语音输入助手", action: #selector(showAbout(_:)), keyEquivalent: "")
+        let aboutItem = NSMenuItem(title: "关于豆包随时说", action: #selector(showAbout(_:)), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
 
-        let quitItem = NSMenuItem(title: "退出豆包语音输入助手", action: #selector(quit(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出豆包随时说", action: #selector(quit(_:)), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -275,7 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let alert = NSAlert()
-        alert.messageText = "豆包语音输入助手\(titleSuffix)"
+        alert.messageText = "豆包随时说\(titleSuffix)"
         alert.informativeText = """
         按一下 Fn：开始或结束豆包语音输入。
         \(ctrlSpaceLine)
