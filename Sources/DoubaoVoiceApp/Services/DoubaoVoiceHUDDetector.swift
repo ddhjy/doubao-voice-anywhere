@@ -9,17 +9,23 @@ import Foundation
 /// 豆包自己结束了录音（静音自动退出、Esc 取消），内部状态就会与豆包真实状态反转：
 /// 想开变成关、想关变成开，表现为「按了 Fn 不触发」或「刚拉起的录音立刻又消失」。
 ///
-/// 豆包输入法进程在录音时会把语音胶囊窗口 order 到屏幕上（实测 ~494x64pt 的高层级浮层），
-/// 空闲时 order out（onscreen=false）。用 CGWindowList 查询它有没有「足够大的在屏浮层窗口」
+/// 豆包输入法进程在录音时会把语音胶囊窗口 order 到屏幕上，空闲时 order out
+/// （onscreen=false）。用 CGWindowList 查询它有没有「足够大的在屏浮层窗口」
 /// 即可判断录音状态。只读取 bounds/pid/alpha/layer 这类元数据，不需要屏幕录制权限。
+///
+/// 胶囊在「录音 → 优化识别中」的整个工作周期内都在屏，形态会变：
+/// 旧版是 ~494x64pt 的大胶囊；2026-07 实测新版录音波形条缩小为 124x32pt@layer3，
+/// 结束录音后的「优化识别中」条更宽一些，识别结果上屏后才 order out。
 enum DoubaoVoiceHUDDetector {
 
     static let imeBundleID = "com.bytedance.inputmethod.doubaoime"
 
     /// 语音胶囊的尺寸门槛。豆包另有一个跟随插入点的「⌥」角标小窗（宽 ~90pt），
     /// 用宽度门槛把它和其它辅助小窗排除掉，避免把「输入法已挂上」误判成「正在录音」。
-    private static let minWindowWidth: Double = 150
-    private static let minWindowHeight: Double = 30
+    /// 上限取角标（~90）与新版波形条（~124）之间：再收窄就会把录音中误判成空闲，
+    /// 引发「停止时反向拉起新录音」「未上屏内容被提前丢弃」等状态反转问题。
+    private static let minWindowWidth: Double = 110
+    private static let minWindowHeight: Double = 25
 
     private static var cachedIMEPid: pid_t?
 

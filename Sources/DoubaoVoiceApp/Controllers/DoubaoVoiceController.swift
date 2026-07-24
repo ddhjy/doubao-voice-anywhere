@@ -38,7 +38,20 @@ final class DoubaoVoiceController: EventTapDelegate {
     private let inputSourceSwitchTimeout: TimeInterval = 2.0
     private let inputSourcePollInterval: TimeInterval = 0.01
     private let inputMethodBridgeDelay: TimeInterval = 0.15
+    /// 胶囊探测未生效时，停止后到恢复输入法的固定延迟（老行为，兜底用）。
     private let restoreAfterVoiceStopDelay: TimeInterval = 1.0
+
+    /// 停止录音后豆包并不会立刻收尾：先进入「优化识别中」阶段（内容越长越久，
+    /// 实测数秒），期间输入框里的文字还是未上屏的组合文本（marked text），
+    /// 胶囊也仍在屏；识别结果替换上屏后胶囊才消失。此时才能安全切走输入法——
+    /// 过早切走会让替换永远无法完成，下次输入会话重置时整段内容被系统丢弃。
+    /// 因此恢复输入法前轮询等待胶囊消失，并要求连续静默若干周期
+    /// （容忍「波形 → 优化识别中」形态切换时窗口短暂 order out 的空档）。
+    private let imeFinalizePollInterval: TimeInterval = 0.2
+    private let imeFinalizeQuietTicks = 5
+    /// 等待豆包收尾的上限：识别优化一般 1-3s，网络差时更久；
+    /// 超过上限就不再等（宁可冒丢字风险也不让输入法永远悬在豆包上）。
+    private let imeFinalizeTimeout: TimeInterval = 10.0
 
     /// Option 单击发出后等待语音胶囊出现的时长（实测正常 0.2-0.6s 内出现）。
     private let hudAppearTimeout: TimeInterval = 1.2
@@ -559,15 +572,58 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     private func scheduleRestorePreviousIME(reason: String) {
         cancelRestoreImeTimer()
+
+        // 胶囊探测生效时，用「胶囊消失」作为豆包识别结果已上屏的真值信号，
+        // 等它收尾后再恢复输入法，避免把「优化识别中」的未上屏内容切丢。
+        if hudDetectionProven {
+            Logger.shared.debug("\(reason)，等待豆包识别结果上屏后恢复输入法")
+            scheduleRestorePoll(
+                deadline: Date(timeIntervalSinceNow: imeFinalizeTimeout),
+                quietTicks: 0
+            )
+            return
+        }
+
+        // 探测未生效（豆包界面变化、进程没找到等）：退回固定延迟的老行为。
+        Logger.shared.debug("\(reason)，已安排恢复之前输入法")
         let work = DispatchWorkItem { [weak self] in
-            self?.restorePreviousIME()
+            guard let self = self else { return }
+            self.restoreImeTimer = nil
+            self.restorePreviousIME()
         }
         restoreImeTimer = work
         DispatchQueue.main.asyncAfter(
             deadline: .now() + restoreAfterVoiceStopDelay,
             execute: work
         )
-        Logger.shared.debug("\(reason)，已安排恢复之前输入法")
+    }
+
+    /// 轮询等待豆包收尾：胶囊连续 imeFinalizeQuietTicks 个周期不可见，
+    /// 视为识别结果已替换上屏，恢复输入法；超时则强制恢复。
+    /// 轮询链挂在 restoreImeTimer 上，新一轮 Fn 动作会经 cancelRestoreImeTimer 整体取消。
+    private func scheduleRestorePoll(deadline: Date, quietTicks: Int) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.restoreImeTimer = nil
+
+            let ticks = self.hudVisibleNow() ? 0 : quietTicks + 1
+            if ticks >= self.imeFinalizeQuietTicks {
+                Logger.shared.debug("豆包识别结果已上屏（胶囊已消失），恢复之前输入法")
+                self.restorePreviousIME()
+                return
+            }
+            if Date() >= deadline {
+                Logger.shared.warn("等待豆包识别结果上屏超时（胶囊仍在屏），强制恢复输入法，未上屏内容可能丢失")
+                self.restorePreviousIME()
+                return
+            }
+            self.scheduleRestorePoll(deadline: deadline, quietTicks: ticks)
+        }
+        restoreImeTimer = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + imeFinalizePollInterval,
+            execute: work
+        )
     }
 
     // MARK: - 输入法切换的细节
