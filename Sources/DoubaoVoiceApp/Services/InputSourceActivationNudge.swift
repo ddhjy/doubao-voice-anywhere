@@ -6,7 +6,7 @@ import Foundation
 ///
 /// 背景：对 CJKV 输入法，单纯调用 `TISSelectInputSource` 有时只会更新菜单栏，
 /// 不会让 Electron 等 App 的文本输入上下文立刻生效，需要一次焦点变化来刷新（参考 macism）。
-/// 但 macism 式的「激活自己再切回去」会让前台 App 短暂失活，Electron 应用（如 Mira）
+/// 但 macism 式的「激活自己再切回去」会让前台 App 短暂失活，Electron 应用（如 Notion）
 /// 会因此丢掉输入框焦点，用户得重新点回输入框。
 /// 这里改用 `.nonactivatingPanel`：前台 App 全程保持 active，只有 key window 短暂换手到面板；
 /// 面板关闭后系统把 key window 还给前台 App，文本输入上下文重新激活时即拿到新输入源，

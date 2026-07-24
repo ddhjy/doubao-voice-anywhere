@@ -16,3 +16,6 @@
 dist/
 Package.resolved
 *.xcodeproj/
+
+# Local code signing identity (per-machine, see build.sh)
+.codesign-identity

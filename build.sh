@@ -20,9 +20,48 @@ BUNDLE_NAME="豆包语音输入助手.app"
 BUNDLE_ID="com.doubaovoiceapp.menubar"
 DISPLAY_NAME="豆包语音输入助手"
 EXECUTABLE_NAME="$APP_NAME"
-CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-Developer ID Application: Kai zeng (6KH2T566FP)}"
 DIST_DIR="$SCRIPT_DIR/dist"
 BUNDLE_PATH="$DIST_DIR/$BUNDLE_NAME"
+IDENTITY_FILE="$SCRIPT_DIR/.codesign-identity"
+
+# ---- 签名身份 ----
+#
+# macOS 的辅助功能授权跟随签名身份：身份稳定，重装后不用重新授权。
+# 取值顺序（找到即止）：
+#   1. 环境变量 CODE_SIGN_IDENTITY
+#   2. 仓库根目录 .codesign-identity 文件（不入库，写一行证书名即可）
+#   3. 自动探测本机第一个可用的代码签名证书
+#   4. ad-hoc 签名（"-"）：无需任何证书即可安装运行，
+#      但每次重新编译安装后需要在「辅助功能」里重新授权一次
+resolve_sign_identity() {
+  if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
+    echo "$CODE_SIGN_IDENTITY"
+    return
+  fi
+
+  if [[ -f "$IDENTITY_FILE" ]]; then
+    local from_file
+    from_file="$(head -n 1 "$IDENTITY_FILE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ -n "$from_file" ]]; then
+      echo "$from_file"
+      return
+    fi
+  fi
+
+  local detected
+  for kind in "Developer ID Application" "Apple Development" "Mac Developer"; do
+    detected="$(security find-identity -v -p codesigning 2>/dev/null \
+      | grep -o "\"$kind: [^\"]*\"" | head -n 1 | tr -d '"' || true)"
+    if [[ -n "$detected" ]]; then
+      echo "$detected"
+      return
+    fi
+  done
+
+  echo "-"
+}
+
+CODE_SIGN_IDENTITY="$(resolve_sign_identity)"
 
 TARGET_ARCHS=("$(uname -m)")
 DO_CLEAN=0
@@ -100,7 +139,7 @@ mkdir -p "$BUNDLE_PATH/Contents/Resources"
 cp "$EXECUTABLE_PATH" "$BUNDLE_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 chmod +x "$BUNDLE_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 
-VERSION="1.0.0"
+VERSION="${APP_VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 
 INFO_PLIST_TEMPLATE="$SCRIPT_DIR/Resources/Info.plist"
@@ -118,7 +157,12 @@ sed \
   -e "s|\${BUNDLE_VERSION}|$BUILD_NUMBER|g" \
   "$INFO_PLIST_TEMPLATE" > "$BUNDLE_PATH/Contents/Info.plist"
 
-info "codesign --sign \"$CODE_SIGN_IDENTITY\""
+if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
+  info "未找到代码签名证书，使用 ad-hoc 签名"
+  info "提示：ad-hoc 签名下，每次重新编译安装后需要在「系统设置 → 隐私与安全性 → 辅助功能」里重新授权一次；想避免这一步，见 README「常见问题」中的自签证书方法"
+else
+  info "codesign --sign \"$CODE_SIGN_IDENTITY\""
+fi
 codesign --force --deep --sign "$CODE_SIGN_IDENTITY" "$BUNDLE_PATH" >/dev/null
 
 info "产物已生成: $BUNDLE_PATH"

@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    name: Build (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build (debug)
+        run: swift build
+
+      # CI 机器上没有签名证书，这一步同时验证了 build.sh 的
+      # 证书自动探测 → ad-hoc 签名回退路径。
+      - name: Assemble .app bundle
+        run: ./build.sh
+
+      - name: Verify bundle
+        run: |
+          codesign --verify --strict "dist/豆包语音输入助手.app"
+          plutil -lint "dist/豆包语音输入助手.app/Contents/Info.plist"

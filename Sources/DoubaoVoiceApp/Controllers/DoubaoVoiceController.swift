@@ -10,6 +10,10 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 配置
     //
+    // 豆包输入法是本 App 的固定目标（产品身份），保持常量；
+    // 「日常输入法」是用户偏好，可在菜单栏「设置…」里修改（见 GeneralSettings），
+    // 这里全部走动态解析：配置的输入法未启用时自动降级或停用相关功能。
+    //
     // 每个目标都同时记 sourceID：localized name 在不同进程 locale 下可能不一致
     // （比如 Squirrel 父 IM 的 name 在 zh-Hans 下是「鼠须管」，en 下是 "Squirrel"），
     // 优先用 sourceID 匹配可以避开这个坑。
@@ -17,10 +21,15 @@ final class DoubaoVoiceController: EventTapDelegate {
     static let targetInputSourceID = "com.bytedance.inputmethod.doubaoime.pinyin"
     static let targetInputMethod = "豆包输入法"
 
-    static let normalChineseInputMethod = "Squirrel - Simplified"
-    static let normalChineseInputSourceID = "im.rime.inputmethod.Squirrel.Hans"
-    static let normalEnglishKeyboardLayout = "U.S."
-    static let normalEnglishKeyboardLayoutID = "com.apple.keylayout.US"
+    /// 解析后的「日常中文输入法」；配置无效时自动降级到系统里第一个中文输入法，可能为 nil。
+    static func resolvedNormalChineseInputSource() -> InputSource? {
+        GeneralSettings.resolvedNormalChineseInputSource(excludingSourceIDs: [targetInputSourceID])
+    }
+
+    /// 解析后的「日常英文键盘布局」；配置无效时自动降级到系统里第一个键盘布局，可能为 nil。
+    static func resolvedNormalEnglishLayout() -> InputSource? {
+        GeneralSettings.resolvedNormalEnglishKeyboardLayout()
+    }
 
     // MARK: - 时间常量（单位：秒）
 
@@ -74,6 +83,24 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
+    // Ctrl+Space 拦截门：只有「开关开启 && 日常中文/英文输入源都可用」时才拦截，
+    // 否则透传给系统，避免把用户的 Ctrl+Space 吞进一个注定失败的切换。
+    // 解析涉及 TIS，不能在事件监听线程做，所以主线程预计算、事件线程只读缓存。
+    private let ctrlSpaceGateLock = NSLock()
+    private var _ctrlSpaceInterceptionActive = false
+    private var ctrlSpaceInterceptionActive: Bool {
+        get {
+            ctrlSpaceGateLock.lock()
+            defer { ctrlSpaceGateLock.unlock() }
+            return _ctrlSpaceInterceptionActive
+        }
+        set {
+            ctrlSpaceGateLock.lock()
+            _ctrlSpaceInterceptionActive = newValue
+            ctrlSpaceGateLock.unlock()
+        }
+    }
+
     private var pendingActionTimer: DispatchWorkItem?
     private var restoreImeTimer: DispatchWorkItem?
 
@@ -86,6 +113,8 @@ final class DoubaoVoiceController: EventTapDelegate {
     private var hudWatchMissCount = 0
 
     private var inputSourceObserver: NSObjectProtocol?
+    private var enabledSourcesObserver: NSObjectProtocol?
+    private var settingsObserver: NSObjectProtocol?
 
     // MARK: - 状态查询（暴露给 UI）
 
@@ -118,9 +147,20 @@ final class DoubaoVoiceController: EventTapDelegate {
         inputSourceObserver = InputSourceManager.observeInputSourceChanged { [weak self] in
             self?.rememberLastNonDoubaoInputSource()
         }
+        enabledSourcesObserver = InputSourceManager.observeEnabledInputSourcesChanged { [weak self] in
+            self?.refreshCtrlSpaceGate()
+        }
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: GeneralSettings.changedNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshCtrlSpaceGate()
+        }
+        refreshCtrlSpaceGate()
+
         Logger.shared.info("目标输入法 source id: \(Self.targetInputSourceID)")
         Logger.shared.info("Fn 轻按：启动/停止豆包语音输入")
-        Logger.shared.info("Ctrl+Space 仅在 \(Self.normalChineseInputMethod) / \(Self.normalEnglishKeyboardLayout) 之间切换")
         Logger.shared.info("输入源激活补丁 App 白名单: \(InputSourceActivationNudgeSettings.bundleIDs.sorted().joined(separator: ", "))")
     }
 
@@ -129,11 +169,41 @@ final class DoubaoVoiceController: EventTapDelegate {
             DistributedNotificationCenter.default().removeObserver(observer)
             inputSourceObserver = nil
         }
+        if let observer = enabledSourcesObserver {
+            DistributedNotificationCenter.default().removeObserver(observer)
+            enabledSourcesObserver = nil
+        }
+        if let observer = settingsObserver {
+            NotificationCenter.default.removeObserver(observer)
+            settingsObserver = nil
+        }
         cancelPendingActionTimer()
         cancelRestoreImeTimer()
         stopHudWatch()
         voiceTransitionInProgress = false
     }
+
+    /// 重新计算 Ctrl+Space 是否应当拦截（主线程调用；配置或系统输入法列表变化时触发）。
+    private func refreshCtrlSpaceGate() {
+        let enabled = GeneralSettings.ctrlSpaceSwitchEnabled
+        let chinese = Self.resolvedNormalChineseInputSource()
+        let english = Self.resolvedNormalEnglishLayout()
+        let active = enabled && chinese != nil && english != nil
+
+        if active != ctrlSpaceInterceptionActive || !gateLoggedOnce {
+            gateLoggedOnce = true
+            if active {
+                Logger.shared.info("Ctrl+Space 轮换已启用: \(chinese!.value) ↔ \(english!.value)")
+            } else if !enabled {
+                Logger.shared.info("Ctrl+Space 轮换已在设置中关闭，按键透传给系统")
+            } else {
+                Logger.shared.warn("Ctrl+Space 轮换已自动停用（日常输入法不可用：中文=\(chinese?.value ?? "无") 英文=\(english?.value ?? "无")），按键透传给系统")
+            }
+        }
+        ctrlSpaceInterceptionActive = active
+    }
+
+    private var gateLoggedOnce = false
 
     // MARK: - EventTapDelegate
     //
@@ -199,6 +269,9 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
 
         guard keycode == keyCodeSpace else { return false }
+
+        // 开关关闭或配置的日常输入源不可用时透传，让系统按默认行为处理 Ctrl+Space。
+        guard ctrlSpaceInterceptionActive else { return false }
 
         let flags = event.flags
         let onlyControl = flags.contains(.maskControl)
@@ -325,9 +398,10 @@ final class DoubaoVoiceController: EventTapDelegate {
             return
         }
 
-        if let previous = previousInputSource, previous.kind == .layout {
+        if let previous = previousInputSource, previous.kind == .layout,
+           let chinese = Self.resolvedNormalChineseInputSource() {
             let ok = selectNormalChineseInputMethod()
-            Logger.shared.debug("当前是键盘布局 \(previous.value)，先桥接到日常中文输入法 \(Self.normalChineseInputMethod)，结果: \(ok)")
+            Logger.shared.debug("当前是键盘布局 \(previous.value)，先桥接到日常中文输入法 \(chinese.value)，结果: \(ok)")
             if ok {
                 waitForNormalChineseInputMethod(onTimeout: { [weak self] in
                     self?.finishVoiceTransition()
@@ -514,26 +588,21 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func isNormalChineseInputMethodActive() -> Bool {
-        InputSourceManager.currentSourceID() == Self.normalChineseInputSourceID
-            || InputSourceManager.currentMethod() == Self.normalChineseInputMethod
+        guard let chinese = Self.resolvedNormalChineseInputSource() else { return false }
+        return (chinese.sourceID != nil && InputSourceManager.currentSourceID() == chinese.sourceID)
+            || InputSourceManager.currentMethod() == chinese.value
     }
 
     private func selectNormalChineseInputMethod() -> Bool {
-        if InputSourceManager.selectSource(byID: Self.normalChineseInputSourceID) { return true }
-        return InputSourceManager.selectMethod(byName: Self.normalChineseInputMethod)
+        guard let chinese = Self.resolvedNormalChineseInputSource() else { return false }
+        if let id = chinese.sourceID, InputSourceManager.selectSource(byID: id) { return true }
+        return InputSourceManager.selectMethod(byName: chinese.value)
     }
 
     private func selectNormalEnglishKeyboardLayout() -> Bool {
-        if InputSourceManager.selectSource(byID: Self.normalEnglishKeyboardLayoutID) { return true }
-        return InputSourceManager.selectLayout(byName: Self.normalEnglishKeyboardLayout)
-    }
-
-    private func defaultNormalChineseInputSource() -> InputSource {
-        InputSource(
-            kind: .method,
-            value: Self.normalChineseInputMethod,
-            sourceID: Self.normalChineseInputSourceID
-        )
+        guard let english = Self.resolvedNormalEnglishLayout() else { return false }
+        if let id = english.sourceID, InputSourceManager.selectSource(byID: id) { return true }
+        return InputSourceManager.selectLayout(byName: english.value)
     }
 
     private func isDoubaoInputSource(_ source: InputSource?) -> Bool {
@@ -542,11 +611,12 @@ final class DoubaoVoiceController: EventTapDelegate {
             || (source.kind == .method && source.value == Self.targetInputMethod)
     }
 
-    private func restoreTargetFrom(_ candidate: InputSource?) -> InputSource {
+    /// 挑选恢复目标；没有任何可用目标（极端情况：日常输入法也解析不到）时返回 nil。
+    private func restoreTargetFrom(_ candidate: InputSource?) -> InputSource? {
         if let candidate = candidate, !isDoubaoInputSource(candidate) {
             return candidate
         }
-        return lastNonDoubaoInputSource ?? defaultNormalChineseInputSource()
+        return lastNonDoubaoInputSource ?? Self.resolvedNormalChineseInputSource()
     }
 
     private func rememberLastNonDoubaoInputSource() {
@@ -574,9 +644,13 @@ final class DoubaoVoiceController: EventTapDelegate {
             }
         }
         if previousInputSource == nil {
-            Logger.shared.debug("没有记录到之前的输入来源，恢复到默认中文输入法")
+            Logger.shared.debug("没有记录到之前的输入来源，恢复到日常中文输入法")
         }
-        let target = restoreTargetFrom(previousInputSource)
+        guard let target = restoreTargetFrom(previousInputSource) else {
+            Logger.shared.warn("没有可恢复的输入源（日常输入法也不可用），保持当前输入法不变")
+            previousInputSource = nil
+            return
+        }
         let ok: Bool
         switch target.kind {
         case .method:
@@ -687,23 +761,32 @@ final class DoubaoVoiceController: EventTapDelegate {
     // MARK: - Ctrl+Space 轮换
 
     private func toggleNormalInputSource() {
+        // 拦截门开启才会走到这里；解析结果仍可能在拦截后一瞬间变化，做兜底检查。
+        guard let chinese = Self.resolvedNormalChineseInputSource(),
+              let english = Self.resolvedNormalEnglishLayout()
+        else {
+            Logger.shared.warn("Ctrl+Space: 日常输入源不可用，跳过本次切换")
+            refreshCtrlSpaceGate()
+            return
+        }
+
         let currentSourceID = InputSourceManager.currentSourceID()
         let currentMethod = InputSourceManager.currentMethod()
         let currentLayout = InputSourceManager.currentLayout()
         Logger.shared.debug("Ctrl+Space: currentSourceID=\(currentSourceID ?? "nil"), currentMethod=\(currentMethod ?? "nil"), currentLayout=\(currentLayout ?? "nil")")
 
         let isDoubao = currentSourceID == Self.targetInputSourceID
-        let isNormalChinese = currentSourceID == Self.normalChineseInputSourceID
-            || currentMethod == Self.normalChineseInputMethod
+        let isNormalChinese = (chinese.sourceID != nil && currentSourceID == chinese.sourceID)
+            || currentMethod == chinese.value
 
         if isDoubao || isNormalChinese {
             let ok = selectNormalEnglishKeyboardLayout()
-            Logger.shared.debug("Ctrl+Space: 切换到英文键盘布局 \(Self.normalEnglishKeyboardLayout), 结果: \(ok)")
+            Logger.shared.debug("Ctrl+Space: 切换到英文键盘布局 \(english.value), 结果: \(ok)")
             return
         }
 
         let ok = selectNormalChineseInputMethod()
-        Logger.shared.debug("Ctrl+Space: 切换到中文输入法 \(Self.normalChineseInputMethod), 结果: \(ok)")
+        Logger.shared.debug("Ctrl+Space: 切换到中文输入法 \(chinese.value), 结果: \(ok)")
         if ok {
             waitForNormalChineseInputMethod {}
         }

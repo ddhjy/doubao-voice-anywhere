@@ -1,51 +1,74 @@
-// 离线测试脚本：手动复现 InputSourceManager 的切换链路。
-// 用法：swift tools/check_switch.swift
+// 离线诊断脚本：查看系统输入源、验证 TIS 切换链路。
+//
+// 用法：
+//   swift tools/check_switch.swift                # 列出所有已启用的输入源及其 sourceID
+//   swift tools/check_switch.swift <id1> <id2>…   # 依次切换到指定 sourceID，验证切换是否生效
+//
+// 示例：
+//   swift tools/check_switch.swift com.bytedance.inputmethod.doubaoime.pinyin com.apple.keylayout.ABC
 import Carbon
 import Foundation
 
-func name(of src: TISInputSource) -> String {
-    guard let raw = TISGetInputSourceProperty(src, kTISPropertyLocalizedName) else { return "?" }
+func property(_ src: TISInputSource, _ key: CFString) -> String? {
+    guard let raw = TISGetInputSourceProperty(src, key) else { return nil }
     return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
 }
 
-func sourceID(of src: TISInputSource) -> String {
-    guard let raw = TISGetInputSourceProperty(src, kTISPropertyInputSourceID) else { return "?" }
-    return Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+func boolProperty(_ src: TISInputSource, _ key: CFString) -> Bool {
+    guard let raw = TISGetInputSourceProperty(src, key) else { return false }
+    return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(raw).takeUnretainedValue())
 }
 
 func currentSnapshot() -> String {
     guard let cur = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "nil" }
-    return "\(name(of: cur))  \(sourceID(of: cur))"
+    let name = property(cur, kTISPropertyLocalizedName) ?? "?"
+    let id = property(cur, kTISPropertyInputSourceID) ?? "?"
+    return "\(name)  \(id)"
+}
+
+func listEnabledSources() {
+    guard let list = TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource] else {
+        print("TISCreateInputSourceList 查询失败")
+        return
+    }
+
+    print("已启用的输入源（可用于「设置…」或本脚本的切换测试）：\n")
+    for src in list {
+        guard let category = property(src, kTISPropertyInputSourceCategory),
+              category == (kTISCategoryKeyboardInputSource as String),
+              boolProperty(src, kTISPropertyInputSourceIsSelectCapable)
+        else { continue }
+        let name = property(src, kTISPropertyLocalizedName) ?? "?"
+        let id = property(src, kTISPropertyInputSourceID) ?? "?"
+        let type = property(src, kTISPropertyInputSourceType) ?? "?"
+        let kind = type == (kTISTypeKeyboardLayout as String) ? "键盘布局" : "输入法　"
+        print("  [\(kind)] \(name)\n             \(id)")
+    }
+    print("\n切换测试：swift tools/check_switch.swift <sourceID> [<sourceID>…]")
 }
 
 func selectByID(_ id: String) -> Bool {
     let filter: [CFString: Any] = [kTISPropertyInputSourceID: id]
-    guard let list = TISCreateInputSourceList(filter as CFDictionary, false)?.takeRetainedValue() as? [TISInputSource], let src = list.first else {
-        print("找不到 sourceID=\(id)")
+    guard let list = TISCreateInputSourceList(filter as CFDictionary, false)?.takeRetainedValue() as? [TISInputSource],
+          let src = list.first
+    else {
+        print("找不到 sourceID=\(id)（是否已在系统设置里启用？）")
         return false
     }
     let r = TISSelectInputSource(src)
     return r == noErr
 }
 
-let doubao = "com.bytedance.inputmethod.doubaoime.pinyin"
-let squirrelHans = "im.rime.inputmethod.Squirrel.Hans"
-let usLayout = "com.apple.keylayout.US"
+let targets = Array(CommandLine.arguments.dropFirst())
 
-print("起始: \(currentSnapshot())")
-
-print("→ 切到豆包：\(selectByID(doubao))")
-Thread.sleep(forTimeInterval: 0.6)
-print("当前: \(currentSnapshot())")
-
-print("→ 切回鼠须管 .Hans：\(selectByID(squirrelHans))")
-Thread.sleep(forTimeInterval: 0.6)
-print("当前: \(currentSnapshot())")
-
-print("→ 切到 U.S. 键盘布局：\(selectByID(usLayout))")
-Thread.sleep(forTimeInterval: 0.6)
-print("当前: \(currentSnapshot())")
-
-print("→ 切回鼠须管 .Hans：\(selectByID(squirrelHans))")
-Thread.sleep(forTimeInterval: 0.6)
-print("最终: \(currentSnapshot())")
+if targets.isEmpty {
+    listEnabledSources()
+} else {
+    let original = currentSnapshot()
+    print("起始: \(original)")
+    for id in targets {
+        print("→ 切到 \(id)：\(selectByID(id))")
+        Thread.sleep(forTimeInterval: 0.6)
+        print("当前: \(currentSnapshot())")
+    }
+}

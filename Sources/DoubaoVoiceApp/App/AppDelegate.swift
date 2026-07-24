@@ -147,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let preferencesItem = NSMenuItem(title: "应用兼容性设置…", action: #selector(openPreferences(_:)), keyEquivalent: ",")
+        let preferencesItem = NSMenuItem(title: "设置…", action: #selector(openPreferences(_:)), keyEquivalent: ",")
         preferencesItem.target = self
         menu.addItem(preferencesItem)
 
@@ -265,11 +265,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let titleSuffix = version.map { " \($0)" } ?? ""
 
+        let ctrlSpaceLine: String
+        if GeneralSettings.ctrlSpaceSwitchEnabled,
+           let chinese = DoubaoVoiceController.resolvedNormalChineseInputSource(),
+           let english = DoubaoVoiceController.resolvedNormalEnglishLayout() {
+            ctrlSpaceLine = "按 Ctrl + Space：在「\(chinese.value)」和「\(english.value)」之间轮换，不会切到豆包。"
+        } else {
+            ctrlSpaceLine = "Ctrl + Space 轮换当前未启用，可在「设置…」里开启。"
+        }
+
         let alert = NSAlert()
         alert.messageText = "豆包语音输入助手\(titleSuffix)"
         alert.informativeText = """
         按一下 Fn：开始或结束豆包语音输入。
-        按 Ctrl + Space：在「\(DoubaoVoiceController.normalChineseInputMethod)」和「\(DoubaoVoiceController.normalEnglishKeyboardLayout)」之间轮换，不会切到豆包。
+        \(ctrlSpaceLine)
 
         纯原生 macOS App，不依赖 Hammerspoon 等任何脚本运行时。
         """
