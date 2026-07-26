@@ -20,10 +20,28 @@ jobs:
 
       # CI 机器上没有签名证书，这一步同时验证了 build.sh 的
       # 证书自动探测 → ad-hoc 签名回退路径。
+      #
+      # 用 --universal 是有意的：release.yml 出的就是双架构包，
+      # 这条路径只在打 tag 时跑一次太晚，放这里每次 push 都过一遍。
       - name: Assemble .app bundle
-        run: ./build.sh
+        run: ./build.sh --universal
+
+      - name: Verify universal binary
+        run: |
+          lipo -info "dist/豆包随时说.app/Contents/MacOS/DoubaoVoiceApp"
+          lipo -info "dist/豆包随时说.app/Contents/Resources/mrbridge.dylib"
 
       - name: Verify bundle
         run: |
-          codesign --verify --strict "dist/豆包随时说.app"
+          codesign --verify --deep --strict "dist/豆包随时说.app"
           plutil -lint "dist/豆包随时说.app/Contents/Info.plist"
+
+      # DMG 打包在这里先冒烟一遍：release.yml 由 tag 触发，等到那时候才发现
+      # 打包脚本坏了，只能删 tag 重来。
+      - name: Package DMG (smoke test)
+        run: |
+          APP_VERSION=0.0.0-ci ./package-dmg.sh
+          hdiutil attach "dist/DoubaoVoiceApp-0.0.0-ci.dmg" \
+            -mountpoint "$RUNNER_TEMP/dmg" -nobrowse -quiet
+          ls -l "$RUNNER_TEMP/dmg"
+          hdiutil detach "$RUNNER_TEMP/dmg" -quiet

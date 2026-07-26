@@ -1,0 +1,222 @@
+name: Release
+
+# 打 tag 出正式包：universal 编译 → Developer ID 签名 → 公证 → 装订票据 →
+# 传到 GitHub Release。需要的 secrets 见 README「发布流程」，
+# 可用 ./setup-ci-secrets.sh 一键配置。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, sign & notarize
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本号
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          # CFBundleShortVersionString 只接受数字点分格式，
+          # 所以 1.2.0-beta1 这类预发布号在写进 Info.plist 前要砍掉后缀。
+          SHORT_VERSION="${VERSION%%-*}"
+
+          if ! [[ "$SHORT_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+            echo "::error::tag 格式不对：$TAG（应形如 v1.2.3 或 v1.2.3-beta1）"
+            exit 1
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "short_version=$SHORT_VERSION"
+            echo "dmg=DoubaoVoiceApp-$VERSION.dmg"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Swift version
+        run: swift --version
+
+      - name: 导入签名证书
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$CERTIFICATE_P12" ]]; then
+            echo "::error::缺少 secret MACOS_CERTIFICATE_P12，先跑一次 ./setup-ci-secrets.sh"
+            exit 1
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          echo -n "$CERTIFICATE_P12" | base64 --decode > "$CERT_PATH"
+
+          # 专用临时钥匙串，跑完即删，不碰 runner 的登录钥匙串。
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          # 关掉自动上锁：默认 5 分钟锁一次，公证等待期间会把后面的 codesign 锁在门外。
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          rm -f "$CERT_PATH"
+
+          # 没有这一步，codesign 用私钥时会弹「允许访问钥匙串」对话框——
+          # 无人值守的 runner 上就是直接卡死到超时。
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" > /dev/null
+
+          # 加进搜索列表，同时保留原有的，别把 runner 其他工具搞坏。
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | tr -d '"')
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+          echo "钥匙串中的签名身份："
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -qF "$SIGN_IDENTITY"; then
+            echo "::error::钥匙串里没有 MACOS_SIGN_IDENTITY 指定的证书：$SIGN_IDENTITY"
+            exit 1
+          fi
+
+      - name: 写入公证凭证
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$API_KEY_P8" ]]; then
+            echo "::error::缺少 secret APPLE_API_KEY_P8，先跑一次 ./setup-ci-secrets.sh"
+            exit 1
+          fi
+
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo -n "$API_KEY_P8" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "NOTARY_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: 编译并签名（universal）
+        env:
+          APP_VERSION: ${{ steps.version.outputs.short_version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          CODE_SIGN_TIMESTAMP: '1' # 公证要求安全时间戳
+        run: ./build.sh --universal
+
+      - name: 检查产物架构与签名
+        run: |
+          set -euo pipefail
+          APP="dist/豆包随时说.app"
+
+          lipo -info "$APP/Contents/MacOS/DoubaoVoiceApp"
+          lipo -info "$APP/Contents/Resources/mrbridge.dylib"
+          plutil -lint "$APP/Contents/Info.plist"
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          # 公证会直接拒掉没开 Hardened Runtime 的包，在这里先拦一道，
+          # 省得等几分钟才从 Apple 那边收到失败。
+          if ! codesign -d --verbose=2 "$APP" 2>&1 | grep -q 'flags=.*runtime'; then
+            echo "::error::.app 没有启用 Hardened Runtime"
+            exit 1
+          fi
+
+      - name: 公证 .app
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          APP="dist/豆包随时说.app"
+
+          # notarytool 不收裸 .app，得先压成 zip；ditto 用来保留签名。
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app.zip"
+          ./notarize.sh "$RUNNER_TEMP/app.zip"
+
+          # 票据装订进 .app 本身：用户离线时 Gatekeeper 也能查到公证结果。
+          xcrun stapler staple "$APP"
+
+      - name: 打包 DMG
+        env:
+          DMG_VERSION: ${{ steps.version.outputs.version }}
+          CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          CODE_SIGN_TIMESTAMP: '1'
+        run: ./package-dmg.sh
+
+      - name: 公证 DMG
+        env:
+          NOTARY_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          DMG="dist/${{ steps.version.outputs.dmg }}"
+
+          ./notarize.sh "$DMG"
+          xcrun stapler staple "$DMG"
+
+      - name: 验收
+        run: |
+          set -euo pipefail
+          APP="dist/豆包随时说.app"
+          DMG="dist/${{ steps.version.outputs.dmg }}"
+
+          # 装订票据会往 bundle 里写文件，确认它没把签名弄脏。
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "---- 票据 ----"
+          xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
+
+          echo "---- Gatekeeper ----"
+          # 期望看到 source=Notarized Developer ID
+          spctl --assess --type execute --verbose=4 "$APP"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+
+          # 用户真正拿到手的是映像里那一份，单独验一遍：
+          # 票据没跟着复制进去的话，别人下载后照样会被 Gatekeeper 拦。
+          echo "---- DMG 内的 .app ----"
+          MOUNT="$RUNNER_TEMP/dmg-verify"
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -quiet
+          xcrun stapler validate "$MOUNT/豆包随时说.app"
+          spctl --assess --type execute --verbose=4 "$MOUNT/豆包随时说.app"
+          lipo -info "$MOUNT/豆包随时说.app/Contents/MacOS/DoubaoVoiceApp"
+          hdiutil detach "$MOUNT" -quiet
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.dmg }}
+          path: dist/${{ steps.version.outputs.dmg }}
+          if-no-files-found: error
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "豆包随时说 ${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            "dist/${{ steps.version.outputs.dmg }}"
+
+      - name: 清理凭证
+        if: always()
+        run: |
+          security delete-keychain "${KEYCHAIN_PATH:-}" 2>/dev/null || true
+          rm -f "${NOTARY_KEY_PATH:-}" "$RUNNER_TEMP/certificate.p12" 2>/dev/null || true

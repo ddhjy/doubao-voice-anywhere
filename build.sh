@@ -22,45 +22,9 @@ DISPLAY_NAME="豆包随时说"
 EXECUTABLE_NAME="$APP_NAME"
 DIST_DIR="$SCRIPT_DIR/dist"
 BUNDLE_PATH="$DIST_DIR/$BUNDLE_NAME"
-IDENTITY_FILE="$SCRIPT_DIR/.codesign-identity"
 
-# ---- 签名身份 ----
-#
-# macOS 的辅助功能授权跟随签名身份：身份稳定，重装后不用重新授权。
-# 取值顺序（找到即止）：
-#   1. 环境变量 CODE_SIGN_IDENTITY
-#   2. 仓库根目录 .codesign-identity 文件（不入库，写一行证书名即可）
-#   3. 自动探测本机第一个可用的代码签名证书
-#   4. ad-hoc 签名（"-"）：无需任何证书即可安装运行，
-#      但每次重新编译安装后需要在「辅助功能」里重新授权一次
-resolve_sign_identity() {
-  if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
-    echo "$CODE_SIGN_IDENTITY"
-    return
-  fi
-
-  if [[ -f "$IDENTITY_FILE" ]]; then
-    local from_file
-    from_file="$(head -n 1 "$IDENTITY_FILE" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    if [[ -n "$from_file" ]]; then
-      echo "$from_file"
-      return
-    fi
-  fi
-
-  local detected
-  for kind in "Developer ID Application" "Apple Development" "Mac Developer"; do
-    detected="$(security find-identity -v -p codesigning 2>/dev/null \
-      | grep -o "\"$kind: [^\"]*\"" | head -n 1 | tr -d '"' || true)"
-    if [[ -n "$detected" ]]; then
-      echo "$detected"
-      return
-    fi
-  done
-
-  echo "-"
-}
-
+# shellcheck source=codesign-lib.sh
+source "$SCRIPT_DIR/codesign-lib.sh"
 CODE_SIGN_IDENTITY="$(resolve_sign_identity)"
 
 TARGET_ARCHS=("$(uname -m)")
@@ -97,36 +61,39 @@ if [[ "$DO_CLEAN" -eq 1 ]]; then
 fi
 
 # ---- 编译 ----
-build_args=(-c release)
+#
+# 逐个架构编译再 lipo 合并，而不是一条 swift build --arch arm64 --arch x86_64：
+# 后者会切到 Xcode build system，Xcode 26 上必崩在
+# "The Xcode build system has terminated due to an error"。
+arch_slices=()
 for arch in "${TARGET_ARCHS[@]}"; do
-  build_args+=(--arch "$arch")
-done
+  info "swift build -c release --arch $arch"
+  swift build -c release --arch "$arch"
 
-info "swift build ${build_args[*]}"
-swift build "${build_args[@]}"
-
-# ---- 找到产物路径 ----
-if [[ ${#TARGET_ARCHS[@]} -gt 1 ]]; then
-  EXECUTABLE_PATH=".build/apple/Products/Release/$EXECUTABLE_NAME"
-else
-  arch="${TARGET_ARCHS[0]}"
-  candidates=(
-    ".build/${arch}-apple-macosx/release/$EXECUTABLE_NAME"
-    ".build/release/$EXECUTABLE_NAME"
-    ".build/apple/Products/Release/$EXECUTABLE_NAME"
-  )
-  EXECUTABLE_PATH=""
-  for path in "${candidates[@]}"; do
-    if [[ -f "$path" ]]; then
-      EXECUTABLE_PATH="$path"
+  slice=""
+  for candidate in \
+    ".build/${arch}-apple-macosx/release/$EXECUTABLE_NAME" \
+    ".build/release/$EXECUTABLE_NAME"; do
+    if [[ -f "$candidate" ]]; then
+      slice="$candidate"
       break
     fi
   done
-fi
 
-if [[ -z "$EXECUTABLE_PATH" || ! -f "$EXECUTABLE_PATH" ]]; then
-  echo "[错误] 找不到编译产物" >&2
-  exit 1
+  if [[ -z "$slice" ]]; then
+    echo "[错误] 找不到 $arch 架构的编译产物" >&2
+    exit 1
+  fi
+  arch_slices+=("$slice")
+done
+
+if [[ ${#arch_slices[@]} -gt 1 ]]; then
+  EXECUTABLE_PATH=".build/universal/$EXECUTABLE_NAME"
+  mkdir -p "$(dirname "$EXECUTABLE_PATH")"
+  info "lipo 合并：${TARGET_ARCHS[*]}"
+  lipo -create -output "$EXECUTABLE_PATH" "${arch_slices[@]}"
+else
+  EXECUTABLE_PATH="${arch_slices[0]}"
 fi
 
 info "可执行文件: $EXECUTABLE_PATH"
@@ -175,13 +142,30 @@ sed \
   -e "s|\${BUNDLE_VERSION}|$BUILD_NUMBER|g" \
   "$INFO_PLIST_TEMPLATE" > "$BUNDLE_PATH/Contents/Info.plist"
 
+# ---- 签名 ----
+#
+# 不用 --deep：Apple 明确说它不适合分发签名，且会把外层的 options 原样套给
+# 嵌套代码。嵌套代码（mrbridge.dylib）必须先签，再签外层 bundle。
+sign_args=(--force --sign "$CODE_SIGN_IDENTITY")
+
 if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
   info "未找到代码签名证书，使用 ad-hoc 签名"
   info "提示：ad-hoc 签名下，每次重新编译安装后需要在「系统设置 → 隐私与安全性 → 辅助功能」里重新授权一次；想避免这一步，见 README「常见问题」中的自签证书方法"
 else
-  info "codesign --sign \"$CODE_SIGN_IDENTITY\""
+  # 公证要求 Hardened Runtime，ad-hoc 签名不支持。
+  sign_args+=(--options runtime)
+
+  # 安全时间戳同样是公证的硬性要求，但要联网访问 Apple 时间戳服务器：
+  # 断网时 codesign 会直接失败。所以本地默认关，CI 里显式置 1。
+  if [[ "${CODE_SIGN_TIMESTAMP:-0}" == "1" ]]; then
+    sign_args+=(--timestamp)
+  fi
+
+  info "codesign --sign \"$CODE_SIGN_IDENTITY\"（Hardened Runtime）"
 fi
-codesign --force --deep --sign "$CODE_SIGN_IDENTITY" "$BUNDLE_PATH" >/dev/null
+
+codesign "${sign_args[@]}" "$BUNDLE_PATH/Contents/Resources/mrbridge.dylib" >/dev/null
+codesign "${sign_args[@]}" "$BUNDLE_PATH" >/dev/null
 
 info "产物已生成: $BUNDLE_PATH"
 file "$BUNDLE_PATH/Contents/MacOS/$EXECUTABLE_NAME"

@@ -35,6 +35,10 @@
 
 ## 安装
 
+[Releases](https://github.com/ddhjy/doubao-voice-anywhere/releases) 里有签名并经过 Apple 公证的 DMG（Intel / Apple Silicon 通用），下载后打开、把 App 拖进 Applications 就能用。
+
+想自己编译：
+
 ```bash
 git clone https://github.com/ddhjy/doubao-voice-anywhere.git
 cd doubao-voice-anywhere
@@ -65,6 +69,8 @@ macOS 的辅助功能授权跟随 App 的签名身份。`build.sh` 按以下顺�
 2. 仓库根目录的 `.codesign-identity` 文件（写一行证书名，不会被提交到 git）
 3. 自动探测本机第一个可用的开发者证书
 4. 都没有时用 ad-hoc 签名——**能正常安装运行**，但每次重新编译安装后需要重新授权一次辅助功能（先移除再勾选）
+
+前三种情况下会一并启用 Hardened Runtime（Apple 公证的前提条件），ad-hoc 签名不支持它，会自动跳过。
 
 不想每次重装都重新授权、又没有付费开发者证书？见[常见问题](#常见问题)里的自签证书方法。
 
@@ -187,7 +193,13 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 ├── LICENSE                             # MIT
 ├── build.sh                            # 编译 + 组装 .app（含签名探测）
 ├── install-app.sh                      # 安装到 ~/Applications 并启动
-├── .github/workflows/ci.yml            # CI：编译 + 打包验证
+├── package-dmg.sh                      # 把 .app 打成可分发 DMG
+├── notarize.sh                         # 提交 Apple 公证并等结果
+├── codesign-lib.sh                     # 签名身份解析，被上面几个脚本 source
+├── setup-ci-secrets.sh                 # 一次性配好 CI 的签名 / 公证 secrets
+├── .github/workflows/
+│   ├── ci.yml                          # push / PR：编译 + 打包验证（ad-hoc 签名）
+│   └── release.yml                     # 打 tag：签名 + 公证 + 发 Release
 ├── assets/                             # README 图片
 ├── Resources/Info.plist                # bundle Info.plist 模板（含 ${...} 占位符）
 ├── tools/check_switch.swift            # 输入源诊断脚本
@@ -222,6 +234,47 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
         ├── InputSourceSettingsPane.swift # 输入法
         └── AppCompatibilityPane.swift  # 应用兼容性
 ```
+
+## 发布流程
+
+推一个 `v` 开头的 tag 就会触发 [release workflow](.github/workflows/release.yml)：universal 编译 → Developer ID 签名 → 送 Apple 公证 → 把票据装订进 `.app` 和 DMG → 建 GitHub Release 并挂上 DMG。装订过票据的包在离线环境下也能通过 Gatekeeper，用户双击即可打开，不用右键绕过。
+
+第一次要配一遍凭证，脚本会引导你导出证书、填 App Store Connect API Key：
+
+```bash
+./setup-ci-secrets.sh
+```
+
+之后每次发版：
+
+```bash
+git tag v1.2.0 && git push origin v1.2.0
+gh run watch    # 公证一般 1-5 分钟
+```
+
+用到的 6 个 secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `MACOS_CERTIFICATE_P12` | Developer ID Application 证书连私钥导出的 .p12，base64 |
+| `MACOS_CERTIFICATE_PASSWORD` | 导出 .p12 时设的密码 |
+| `MACOS_SIGN_IDENTITY` | 证书全名，形如 `Developer ID Application: Your Name (TEAMID)` |
+| `APPLE_API_KEY_P8` | App Store Connect API Key 的 .p8，base64 |
+| `APPLE_API_KEY_ID` | Key ID，10 位 |
+| `APPLE_API_ISSUER_ID` | Issuer ID，UUID |
+
+同一套脚本在本地也能手动跑完整流程：
+
+```bash
+APP_VERSION=1.2.0 CODE_SIGN_TIMESTAMP=1 ./build.sh --universal
+DMG_VERSION=1.2.0 CODE_SIGN_TIMESTAMP=1 ./package-dmg.sh
+NOTARY_KEY_PATH=~/AuthKey_XXXXXXXXXX.p8 NOTARY_KEY_ID=XXXXXXXXXX \
+  NOTARY_ISSUER_ID=<uuid> ./notarize.sh dist/DoubaoVoiceApp-1.2.0.dmg
+```
+
+`CODE_SIGN_TIMESTAMP=1` 打开安全时间戳（公证必需，要联网），本地日常构建默认关着，断网也能签。
+
+出问题看 `gh run view --log-failed`；公证被 Apple 拒绝时，`notarize.sh` 会把对方返回的完整原因打进日志。
 
 ## 贡献
 

@@ -56,7 +56,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
 fi
 
 if [[ ! -d "$DIST_BUNDLE" ]]; then
-  error "找不到产物：$DIST_BUNDLE，请先执行 ./build.sh"
+  error "找不到产物：${DIST_BUNDLE}，请先执行 ./build.sh"
   exit 1
 fi
 
@@ -99,7 +99,7 @@ remove_legacy_bundles() {
       if rm -rf "$legacy" 2>/dev/null; then
         info "已清理旧版本包：$legacy"
       else
-        error "无法删除旧版本包：$legacy，请手动移除"
+        error "无法删除旧版本包：${legacy}，请手动移除"
       fi
     fi
   done

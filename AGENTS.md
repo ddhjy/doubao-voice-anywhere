@@ -5,6 +5,9 @@
 - `./install-app.sh` 是默认编译脚本：编译 → 打包 `.app` → 安装到 `~/Applications` → 启动。
 - 只验证编译用 `swift build`；只打包不安装用 `./build.sh`。
 - 没有单元测试；行为验证靠日志 `~/Library/Logs/DoubaoVoiceApp/app.log`。
+- 发布靠推 `v*` tag 触发 `.github/workflows/release.yml`：universal 编译 → Developer ID 签名 → Apple 公证 → 装订票据 → 建 GitHub Release。CI 凭证用 `./setup-ci-secrets.sh` 配一次。
+- universal 包必须逐架构编译再 `lipo` 合并（见 `build.sh`）。别改回一条 `swift build --arch arm64 --arch x86_64`：那会切到 Xcode build system，在 Xcode 26 上必崩在「The Xcode build system has terminated」。
+- 有真实证书时 `build.sh` 一律带 Hardened Runtime（公证前提）；安全时间戳要联网，只由 `CODE_SIGN_TIMESTAMP=1` 打开，本地默认关着好让断网也能签。
 
 ## 架构速览
 
