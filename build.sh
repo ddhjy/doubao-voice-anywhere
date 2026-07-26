@@ -151,7 +151,7 @@ for arch in "${TARGET_ARCHS[@]}"; do
 done
 info "编译 mrbridge.dylib（${TARGET_ARCHS[*]}）"
 clang "${helper_arch_flags[@]}" -dynamiclib -fobjc-arc -O2 \
-  -mmacosx-version-min=12.0 \
+  -mmacosx-version-min=13.0 \
   -framework Foundation \
   -o "$BUNDLE_PATH/Contents/Resources/mrbridge.dylib" \
   "$HELPER_SRC_DIR/mrbridge.m"

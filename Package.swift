@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "DoubaoVoiceApp",
     platforms: [
-        .macOS(.v12)
+        .macOS(.v13)
     ],
     targets: [
         .executableTarget(

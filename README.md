@@ -27,7 +27,7 @@
 
 ## 前置要求
 
-- macOS 12 或更高版本
+- macOS 13 或更高版本
 - 已安装[豆包输入法](https://www.doubao.com/product/input-method)，并已在「系统设置 → 键盘 → 输入法」中添加
 - 豆包输入法的语音快捷键保持默认的「单击左 Option」（本 App 靠它触发语音）
 - 编译需要 Xcode Command Line Tools（含 Swift 5.9+）：`xcode-select --install`
@@ -76,15 +76,19 @@ macOS 的辅助功能授权跟随 App 的签名身份。`build.sh` 按以下顺�
 
 ## 配置
 
-打开菜单栏图标 →「设置…」：
+打开菜单栏图标 →「设置…」，分三个分栏：
 
-**输入法与快捷键**
-- **日常中文输入法 / 日常英文键盘**：从系统已启用的输入源里直接选。它们是 `Ctrl+Space` 轮换的两端，也是语音结束后找不到「之前输入源」时的兜底恢复目标。
-- **Ctrl+Space 轮换开关**：不想让本 App 接管 `Ctrl+Space` 就关掉它，按键会交回系统处理。配置的输入法在系统里不可用时，App 也会自动暂停拦截，不会吞掉你的按键。
-- **语音时暂停媒体开关**：按 `Fn` 说话时自动暂停系统「正在播放」的媒体，说完自动恢复（默认开启）。只有真的由本 App 暂停的媒体才会被恢复，不会乱拉起你手动暂停的音乐；会议通话类音频不注册系统媒体会话，不受影响。
+**通用**
+- **登录时自动启动**：写入当前用户的 LaunchAgent。
+- **说话时暂停正在播放的媒体**：按 `Fn` 说话时自动暂停系统「正在播放」的媒体，说完自动恢复（默认开启）。只有真的由本 App 暂停的媒体才会被恢复，不会乱拉起你手动暂停的音乐；会议通话类音频不注册系统媒体会话，不受影响。
+- **辅助功能权限**：显示当前授权状态，未授权时可直接跳转系统设置；旁边的「重新连接键盘监听」用于事件监听失效时手动重启。
+
+**输入法**
+- **日常中文输入法 / 日常英文键盘**：从系统已启用的输入源里直接选。它们是 `Ctrl+Space` 轮换的两端，也是语音结束后找不到「之前输入源」时的兜底恢复目标。配置的输入源在系统里未启用时，下拉框会把它标成「（未启用）」保留住，不会静默改掉你的配置，同时给出黄色警告说明当前实际改用了哪一个。
+- **用 Ctrl+Space 轮换输入源**：不想让本 App 接管 `Ctrl+Space` 就关掉它，按键会交回系统处理。配置的输入法在系统里不可用时，App 也会自动暂停拦截，不会吞掉你的按键。
 
 **应用兼容性**
-部分 Electron 应用（如 Notion、VS Code）会出现「菜单栏输入法已切换，但应用内输入框没有真正切换」的问题。把这类 App 加进列表后，切换输入法时会做一次极短的输入上下文刷新：用一个不激活本 App 的小面板短暂接管 key window 再还回去，前台 App 全程保持激活，输入框焦点不会丢。默认已包含 Notion。
+部分 Electron 应用（如 Notion、VS Code）会出现「菜单栏输入法已切换，但应用内输入框没有真正切换」的问题。把这类 App 加进列表后，切换输入法时会做一次极短的输入上下文刷新：用一个不激活本 App 的小面板短暂接管 key window 再还回去，前台 App 全程保持激活，输入框焦点不会丢。默认已包含 Notion。列表下方的 `+` 可以选 `.app` 或直接填 Bundle ID，`−`（或 Delete 键）移除选中项。
 
 想查看系统里所有输入源的 ID，或验证输入法切换是否正常：
 
@@ -103,8 +107,7 @@ swift tools/check_switch.swift com.apple.keylayout.ABC  # 测试切换到指定�
 | 开始 / 结束豆包语音 | 等同于按 `Fn`，没法按键时手动触发 |
 | 切到豆包输入法 | 仅切输入源、不触发语音 |
 | 切回上一个输入法 | 恢复被切到豆包之前的输入源 |
-| 设置… | 日常输入法、Ctrl+Space 开关、语音时暂停媒体开关、应用兼容性 |
-| 登录时自动启动 | 写入当前用户的 LaunchAgent |
+| 设置… | 自启动、语音时暂停媒体、权限状态、日常输入法、Ctrl+Space 开关、应用兼容性 |
 | 在 Finder 中显示日志 | 打开 `~/Library/Logs/DoubaoVoiceApp/app.log` |
 
 ## 常见问题
@@ -122,10 +125,10 @@ swift tools/check_switch.swift com.apple.keylayout.ABC  # 测试切换到指定�
 确认豆包输入法的「语音输入」快捷键仍是默认的「单击左 Option」（在豆包输入法自己的设置里改回来）。日志里能看到每一步切换是否成功。
 
 **Ctrl+Space 没反应？**
-打开「设置…」检查两个日常输入源是否有效。如果配置的输入法未启用，界面会有 ⚠️ 提示，此时 App 自动暂停拦截、按键交回系统。
+打开「设置…」→「输入法」检查两个日常输入源是否有效。如果配置的输入法未启用，界面会有黄色警告提示，此时 App 自动暂停拦截、按键交回系统。
 
 **我不用鼠须管 / 我的输入法不在默认配置里？**
-打开「设置…」，在下拉框里直接选你的输入法即可，不需要改代码。
+打开「设置…」→「输入法」，在下拉框里直接选你的输入法即可，不需要改代码。
 
 **说话时音乐没有自动暂停？**
 先确认「设置…」里的开关是开着的，再看日志：正常一次会话会有「已暂停 xx 的播放」和「已恢复 xx 的播放」。如果日志提示「媒体暂停组件缺失」，说明 App 不是用 `./install-app.sh` 打包安装的（`swift build` 直跑没有 Resources）。个别播放器不接入系统「正在播放」会话（按 F8 播放/暂停键对它无效的那种），这类播放器无法被控制。
@@ -167,11 +170,12 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 - 全局键盘事件：`CGEventTap`（独立线程 + 禁用自动恢复 + 看门狗巡检）
 - 模拟左 Option：combined-session `flagsChanged` 事件，在 HID / combined session 两层状态里确认释放
 - 菜单栏宿主：`NSStatusItem` + `LSUIElement = true`
+- 设置窗口：`NSTabViewController`（`.toolbar` 分栏）承载 SwiftUI 分组 `Form`，对齐系统设置的观感
 - 编译产物用 shell 脚本组装成 `.app` bundle，签名方式自动探测（见[关于代码签名](#关于代码签名)）
 
 ## 目录结构
 
-按 Apple / SwiftPM 惯例分层：`App/` 装应用生命周期，`Controllers/` 装顶层控制器，`Models/` 放纯数据类型，`Services/` 是对系统 API 的封装，`Utilities/` 是与业务无关的工具类。
+按 Apple / SwiftPM 惯例分层：`App/` 装应用生命周期，`Controllers/` 装顶层控制器，`Models/` 放纯数据类型，`Services/` 是对系统 API 的封装，`Utilities/` 是与业务无关的工具类，`Views/` 是设置界面的 SwiftUI 视图。
 
 ```text
 .
@@ -193,7 +197,7 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
     ├── Controllers/
     │   ├── DoubaoVoiceController.swift # 主状态机
     │   ├── EventTapController.swift    # CGEventTap 包装
-    │   └── PreferencesWindowController.swift  # 设置窗口
+    │   └── PreferencesWindowController.swift  # 设置窗口外壳（工具栏分栏）
     ├── Models/
     │   └── InputSource.swift           # 输入源描述
     ├── Services/
@@ -206,8 +210,13 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
     │   ├── InputSourceActivationNudgeSettings.swift  # 应用兼容性白名单
     │   ├── LoginItemManager.swift      # 登录时自动启动
     │   └── PermissionManager.swift     # 辅助功能权限
-    └── Utilities/
-        └── Logger.swift                # stderr + 文件日志
+    ├── Utilities/
+    │   └── Logger.swift                # stderr + 文件日志
+    └── Views/                           # 设置界面（SwiftUI）
+        ├── SettingsStore.swift         # 界面与各服务之间的状态桥接
+        ├── GeneralSettingsPane.swift   # 通用
+        ├── InputSourceSettingsPane.swift # 输入法
+        └── AppCompatibilityPane.swift  # 应用兼容性
 ```
 
 ## 贡献

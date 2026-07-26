@@ -13,9 +13,11 @@
 - `Sources/DoubaoVoiceApp/Services/GeneralSettings.swift`：用户配置（UserDefaults），默认值必须与老版本硬编码一致。
 - `Sources/DoubaoVoiceApp/Services/DoubaoVoiceHUDDetector.swift`：用豆包语音胶囊窗口作为「是否在录音」的真值源。
 - `Sources/DoubaoVoiceApp/Services/MediaPlaybackPauser.swift`：语音期间暂停/恢复系统「正在播放」的媒体。macOS 15.4+ 封锁了第三方进程直调 MediaRemote，所以经系统自带 perl 宿主执行 `Helper/MediaRemoteBridge/`（build.sh 编译进 Resources）；helper 失败只记日志，不许影响语音主流程。
+- `Sources/DoubaoVoiceApp/Views/`：设置界面（SwiftUI）。`PreferencesWindowController` 只剩 `NSTabViewController`（`.toolbar` 分栏）外壳，每个分栏是 `NSHostingController` 托管的分组 `Form`；`SettingsStore` 只做状态桥接，真值仍在各服务里，写入一律走原有 setter。
 
 ## 硬约束
 
 1. 事件监听线程的回调（`EventTapDelegate` 各方法）必须立即返回，禁止 TIS、磁盘同步 IO 等可能阻塞的调用——阻塞超过约 1 秒系统会禁用整个 tap。
 2. 不要破坏配置默认值的向后兼容：老用户升级后行为不能变。
 3. 面向用户的文案（菜单、弹窗、日志）用简体中文。
+4. 部署目标是 macOS 13，别用更高版本才有的 API（CI 跑在 macos-14 runner 上，本机 SDK 更新，编不出错不代表用户能跑）。

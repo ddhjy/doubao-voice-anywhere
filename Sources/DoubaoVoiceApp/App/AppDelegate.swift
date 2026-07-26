@@ -9,7 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var permissionRetryTimer: Timer?
     private var keepAliveActivity: NSObjectProtocol?
-    private lazy var preferencesWindowController = PreferencesWindowController()
+    private lazy var preferencesWindowController = PreferencesWindowController(
+        restartEventTap: { [weak self] in self?.restartTap(nil) }
+    )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Logger.shared.info("DoubaoVoiceApp 启动 (PID \(ProcessInfo.processInfo.processIdentifier))")
@@ -119,13 +121,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let permItem = NSMenuItem(
-            title: trusted ? "辅助功能权限 已开启" : "去开启辅助功能权限…",
-            action: trusted ? nil : #selector(openAccessibility(_:)),
-            keyEquivalent: ""
-        )
-        permItem.target = self
-        menu.addItem(permItem)
+        // 已授权时不占一行：权限状态在「设置…」的「通用」分栏里能看到。
+        if !trusted {
+            let permItem = NSMenuItem(
+                title: "去开启辅助功能权限…",
+                action: #selector(openAccessibility(_:)),
+                keyEquivalent: ""
+            )
+            permItem.target = self
+            menu.addItem(permItem)
+        }
 
         let restartItem = NSMenuItem(title: "重新连接键盘监听", action: #selector(restartTap(_:)), keyEquivalent: "r")
         restartItem.target = self
@@ -150,11 +155,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let preferencesItem = NSMenuItem(title: "设置…", action: #selector(openPreferences(_:)), keyEquivalent: ",")
         preferencesItem.target = self
         menu.addItem(preferencesItem)
-
-        let launchAtLoginItem = NSMenuItem(title: "登录时自动启动", action: #selector(toggleLaunchAtLogin(_:)), keyEquivalent: "")
-        launchAtLoginItem.target = self
-        launchAtLoginItem.state = LoginItemManager.isEnabled ? .on : .off
-        menu.addItem(launchAtLoginItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -233,20 +233,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         preferencesWindowController.showWindow(sender)
     }
 
-    @objc private func toggleLaunchAtLogin(_ sender: Any?) {
-        let shouldEnable = !LoginItemManager.isEnabled
-        do {
-            try LoginItemManager.setEnabled(shouldEnable)
-        } catch {
-            Logger.shared.error("切换自启动失败: \(error.localizedDescription)")
-            showMessage(
-                "自启动设置失败",
-                informativeText: error.localizedDescription
-            )
-        }
-        refreshMenu()
-    }
-
     @objc private func restartTap(_ sender: Any?) {
         eventTap.stop()
         if !startEventTapWithRetry() {
@@ -287,14 +273,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         纯原生 macOS App，不依赖 Hammerspoon 等任何脚本运行时。
         """
-        alert.addButton(withTitle: "好")
-        alert.runModal()
-    }
-
-    private func showMessage(_ messageText: String, informativeText: String) {
-        let alert = NSAlert()
-        alert.messageText = messageText
-        alert.informativeText = informativeText
         alert.addButton(withTitle: "好")
         alert.runModal()
     }
