@@ -16,6 +16,11 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         target: nil,
         action: nil
     )
+    private let pauseMediaCheckbox = NSButton(
+        checkboxWithTitle: "按 Fn 说话时自动暂停正在播放的媒体，说完自动恢复",
+        target: nil,
+        action: nil
+    )
     private let generalStatusLabel = NSTextField(wrappingLabelWithString: "")
 
     // MARK: - 应用兼容性 tab 控件
@@ -128,6 +133,8 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         englishPopup.action = #selector(englishPopupChanged(_:))
         ctrlSpaceCheckbox.target = self
         ctrlSpaceCheckbox.action = #selector(ctrlSpaceToggled(_:))
+        pauseMediaCheckbox.target = self
+        pauseMediaCheckbox.action = #selector(pauseMediaToggled(_:))
 
         let grid = NSGridView(views: [
             [chineseLabel, chinesePopup],
@@ -141,7 +148,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
         generalStatusLabel.font = .systemFont(ofSize: 12)
         generalStatusLabel.textColor = .secondaryLabelColor
 
-        [helpLabel, grid, ctrlSpaceCheckbox, generalStatusLabel].forEach {
+        [helpLabel, grid, ctrlSpaceCheckbox, pauseMediaCheckbox, generalStatusLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview($0)
         }
@@ -159,7 +166,11 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             ctrlSpaceCheckbox.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             ctrlSpaceCheckbox.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
 
-            generalStatusLabel.topAnchor.constraint(equalTo: ctrlSpaceCheckbox.bottomAnchor, constant: 14),
+            pauseMediaCheckbox.topAnchor.constraint(equalTo: ctrlSpaceCheckbox.bottomAnchor, constant: 10),
+            pauseMediaCheckbox.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            pauseMediaCheckbox.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
+
+            generalStatusLabel.topAnchor.constraint(equalTo: pauseMediaCheckbox.bottomAnchor, constant: 14),
             generalStatusLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
             generalStatusLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
             generalStatusLabel.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -20),
@@ -186,6 +197,7 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
             missingKind: .layout
         )
         ctrlSpaceCheckbox.state = GeneralSettings.ctrlSpaceSwitchEnabled ? .on : .off
+        pauseMediaCheckbox.state = GeneralSettings.pauseMediaDuringVoice ? .on : .off
         refreshGeneralStatus()
     }
 
@@ -275,6 +287,10 @@ final class PreferencesWindowController: NSWindowController, NSTableViewDataSour
 
     @objc private func ctrlSpaceToggled(_ sender: NSButton) {
         GeneralSettings.ctrlSpaceSwitchEnabled = sender.state == .on
+    }
+
+    @objc private func pauseMediaToggled(_ sender: NSButton) {
+        GeneralSettings.pauseMediaDuringVoice = sender.state == .on
     }
 
     @objc private func generalSettingsDidChange(_ notification: Notification) {

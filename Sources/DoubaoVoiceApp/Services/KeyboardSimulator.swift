@@ -14,6 +14,23 @@ enum KeyboardSimulator {
     private static let rawMaskDeviceLeftAlternate: UInt64 = 0x0000_0020
     private static let rawMaskDeviceRightAlternate: UInt64 = 0x0000_0040
 
+    /// 一次「左 Option 单击」上不该出现的所有修饰键位，含设备相关位。
+    private static let foreignModifierMask: UInt64 =
+        CGEventFlags.maskCommand.rawValue
+        | CGEventFlags.maskShift.rawValue
+        | CGEventFlags.maskControl.rawValue
+        | CGEventFlags.maskSecondaryFn.rawValue
+        | CGEventFlags.maskAlphaShift.rawValue
+        | CGEventFlags.maskNumericPad.rawValue
+        | CGEventFlags.maskHelp.rawValue
+        | 0x0000_0001 // 左 Control
+        | 0x0000_0002 // 左 Shift
+        | 0x0000_0004 // 右 Shift
+        | 0x0000_0008 // 左 Command
+        | 0x0000_0010 // 右 Command
+        | 0x0000_2000 // 右 Control
+        | rawMaskDeviceRightAlternate
+
     private static let optionTapHoldDuration: TimeInterval = 0.05
     private static let optionReleaseSettleDuration: TimeInterval = 0.03
     private static let optionReleaseRetryCount = 8
@@ -40,6 +57,18 @@ enum KeyboardSimulator {
 
         if event.type != .flagsChanged {
             event.type = .flagsChanged
+        }
+
+        // CGEvent 会把 eventSource 当前的修饰键状态一并写进新事件。系统里只要残留一个
+        // 幽灵修饰键（Fn 卡住最常见，录屏软件、外接键盘、被吞掉的 keyUp 都可能留下），
+        // 豆包收到的就不是干净的「左 Option」而是「Fn+左 Option」，直接忽略——
+        // 表现为快捷键连续多次失灵，直到用户真按一次 Ctrl+Space 才恢复。
+        // 剥掉这些无关位，只保留 CGEvent 自己算出来的 Option 位，
+        // 干净环境下事件形态与从前完全一致。
+        let inherited = event.flags.rawValue
+        if inherited & foreignModifierMask != 0 {
+            Logger.shared.warn("合成单击带上了无关修饰键（flags=\(formatFlags(inherited))，多半是卡住的幽灵修饰键），已剥掉再发送")
+            event.flags = CGEventFlags(rawValue: inherited & ~foreignModifierMask)
         }
 
         event.post(tap: .cghidEventTap)
@@ -149,13 +178,16 @@ enum KeyboardSimulator {
     // MARK: - 修饰键状态守门
 
     /// 等到当前所有修饰键都松开再执行 `block`，防止真实按下的 Fn / Ctrl 干扰单击 Option。
+    ///
+    /// 超时后仍然发送：卡住的多半是幽灵修饰键（键早就松了、状态没清），死等只会让快捷键
+    /// 彻底失灵。`postLeftOption` 会把无关修饰键从事件里剥掉，脏状态污染不到这一击。
     static func runWhenModifiersClear(attemptsLeft: Int = 30, _ block: @escaping () -> Void) {
         if modifiersAreClear() {
             block()
             return
         }
         if attemptsLeft <= 0 {
-            Logger.shared.warn("等待修饰键释放超时，继续发送左 Option 单击，flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
+            Logger.shared.warn("等待修饰键释放超时（可能是卡住的幽灵修饰键），仍按干净的左 Option 发送，当前 flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
             block()
             return
         }

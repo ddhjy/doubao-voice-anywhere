@@ -12,6 +12,7 @@
 - `Sources/DoubaoVoiceApp/Controllers/EventTapController.swift`：CGEventTap 包装，独立线程。
 - `Sources/DoubaoVoiceApp/Services/GeneralSettings.swift`：用户配置（UserDefaults），默认值必须与老版本硬编码一致。
 - `Sources/DoubaoVoiceApp/Services/DoubaoVoiceHUDDetector.swift`：用豆包语音胶囊窗口作为「是否在录音」的真值源。
+- `Sources/DoubaoVoiceApp/Services/MediaPlaybackPauser.swift`：语音期间暂停/恢复系统「正在播放」的媒体。macOS 15.4+ 封锁了第三方进程直调 MediaRemote，所以经系统自带 perl 宿主执行 `Helper/MediaRemoteBridge/`（build.sh 编译进 Resources）；helper 失败只记日志，不许影响语音主流程。
 
 ## 硬约束
 

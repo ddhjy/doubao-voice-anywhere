@@ -17,6 +17,7 @@ enum GeneralSettings {
         static let englishSourceID = "NormalEnglishKeyboardLayoutID"
         static let englishName = "NormalEnglishKeyboardLayoutName"
         static let ctrlSpaceEnabled = "CtrlSpaceSwitchEnabled"
+        static let pauseMediaDuringVoice = "PauseMediaDuringVoiceInput"
     }
 
     /// 与早期版本硬编码值一致的默认配置。
@@ -54,6 +55,19 @@ enum GeneralSettings {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: Key.ctrlSpaceEnabled)
+            postChanged()
+        }
+    }
+
+    /// 按 Fn 说话时自动暂停正在播放的媒体、结束后恢复（默认开启）。
+    /// 这是 2026-07 新增能力，没有对应的老版本硬编码行为；不想要的用户可在
+    /// 设置里关闭。关闭后完全不触碰系统媒体会话。
+    static var pauseMediaDuringVoice: Bool {
+        get {
+            UserDefaults.standard.object(forKey: Key.pauseMediaDuringVoice) as? Bool ?? true
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Key.pauseMediaDuringVoice)
             postChanged()
         }
     }

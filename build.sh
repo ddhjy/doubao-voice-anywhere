@@ -139,6 +139,24 @@ mkdir -p "$BUNDLE_PATH/Contents/Resources"
 cp "$EXECUTABLE_PATH" "$BUNDLE_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 chmod +x "$BUNDLE_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 
+# ---- 编译 MediaRemote 桥接 helper（语音输入时暂停/恢复媒体播放用）----
+#
+# mrbridge.dylib 不由主程序加载，而是运行时交给系统自带的 /usr/bin/perl
+# （Apple 平台二进制）加载执行：macOS 15.4 起只有 Apple 平台二进制能拿到
+# 真实的「正在播放」状态，详见 Helper/MediaRemoteBridge/mrbridge.m。
+HELPER_SRC_DIR="$SCRIPT_DIR/Helper/MediaRemoteBridge"
+helper_arch_flags=()
+for arch in "${TARGET_ARCHS[@]}"; do
+  helper_arch_flags+=(-arch "$arch")
+done
+info "编译 mrbridge.dylib（${TARGET_ARCHS[*]}）"
+clang "${helper_arch_flags[@]}" -dynamiclib -fobjc-arc -O2 \
+  -mmacosx-version-min=12.0 \
+  -framework Foundation \
+  -o "$BUNDLE_PATH/Contents/Resources/mrbridge.dylib" \
+  "$HELPER_SRC_DIR/mrbridge.m"
+cp "$HELPER_SRC_DIR/mrbridge-host.pl" "$BUNDLE_PATH/Contents/Resources/"
+
 VERSION="${APP_VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 

@@ -274,10 +274,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ctrlSpaceLine = "Ctrl + Space 轮换当前未启用，可在「设置…」里开启。"
         }
 
+        let pauseMediaLine = GeneralSettings.pauseMediaDuringVoice
+            ? "说话时自动暂停正在播放的媒体，说完自动恢复。"
+            : "语音时暂停媒体当前未启用，可在「设置…」里开启。"
+
         let alert = NSAlert()
         alert.messageText = "豆包随时说\(titleSuffix)"
         alert.informativeText = """
         按一下 Fn：开始或结束豆包语音输入。
+        \(pauseMediaLine)
         \(ctrlSpaceLine)
 
         纯原生 macOS App，不依赖 Hammerspoon 等任何脚本运行时。

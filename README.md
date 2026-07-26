@@ -11,6 +11,7 @@
 
 - 切换到豆包输入法
 - 唤起豆包语音输入
+- 暂停正在播放的音乐 / 视频（汽水音乐、抖音、Music、浏览器……），说完自动恢复
 - 说完后切回你原来的输入法
 - （可选）让 `Ctrl+Space` 只在你的日常中文输入法和英文键盘之间轮换，不把豆包放进轮换
 
@@ -68,8 +69,8 @@ macOS 的辅助功能授权跟随 App 的签名身份。`build.sh` 按以下顺�
 
 ## 怎么用
 
-1. 轻按一次 `Fn`：自动切到豆包输入法并启动语音输入，开始说话。
-2. 说完再轻按一次 `Fn`：结束语音，自动切回你之前的输入法。
+1. 轻按一次 `Fn`：自动切到豆包输入法并启动语音输入，开始说话。正在放歌 / 放视频的话会先帮你暂停，不让背景音干扰识别。
+2. 说完再轻按一次 `Fn`：结束语音，自动切回你之前的输入法，被暂停的媒体自动恢复播放。
 3. 录音过程中敲任意键或点击鼠标，也会自动结束语音并恢复输入法。
 4. （可选）按 `Ctrl+Space`：只在你配置的中文输入法 / 英文键盘之间轮换，不会切到豆包。
 
@@ -80,6 +81,7 @@ macOS 的辅助功能授权跟随 App 的签名身份。`build.sh` 按以下顺�
 **输入法与快捷键**
 - **日常中文输入法 / 日常英文键盘**：从系统已启用的输入源里直接选。它们是 `Ctrl+Space` 轮换的两端，也是语音结束后找不到「之前输入源」时的兜底恢复目标。
 - **Ctrl+Space 轮换开关**：不想让本 App 接管 `Ctrl+Space` 就关掉它，按键会交回系统处理。配置的输入法在系统里不可用时，App 也会自动暂停拦截，不会吞掉你的按键。
+- **语音时暂停媒体开关**：按 `Fn` 说话时自动暂停系统「正在播放」的媒体，说完自动恢复（默认开启）。只有真的由本 App 暂停的媒体才会被恢复，不会乱拉起你手动暂停的音乐；会议通话类音频不注册系统媒体会话，不受影响。
 
 **应用兼容性**
 部分 Electron 应用（如 Notion、VS Code）会出现「菜单栏输入法已切换，但应用内输入框没有真正切换」的问题。把这类 App 加进列表后，切换输入法时会做一次极短的输入上下文刷新：用一个不激活本 App 的小面板短暂接管 key window 再还回去，前台 App 全程保持激活，输入框焦点不会丢。默认已包含 Notion。
@@ -101,7 +103,7 @@ swift tools/check_switch.swift com.apple.keylayout.ABC  # 测试切换到指定�
 | 开始 / 结束豆包语音 | 等同于按 `Fn`，没法按键时手动触发 |
 | 切到豆包输入法 | 仅切输入源、不触发语音 |
 | 切回上一个输入法 | 恢复被切到豆包之前的输入源 |
-| 设置… | 日常输入法、Ctrl+Space 开关、应用兼容性 |
+| 设置… | 日常输入法、Ctrl+Space 开关、语音时暂停媒体开关、应用兼容性 |
 | 登录时自动启动 | 写入当前用户的 LaunchAgent |
 | 在 Finder 中显示日志 | 打开 `~/Library/Logs/DoubaoVoiceApp/app.log` |
 
@@ -125,6 +127,9 @@ swift tools/check_switch.swift com.apple.keylayout.ABC  # 测试切换到指定�
 **我不用鼠须管 / 我的输入法不在默认配置里？**
 打开「设置…」，在下拉框里直接选你的输入法即可，不需要改代码。
 
+**说话时音乐没有自动暂停？**
+先确认「设置…」里的开关是开着的，再看日志：正常一次会话会有「已暂停 xx 的播放」和「已恢复 xx 的播放」。如果日志提示「媒体暂停组件缺失」，说明 App 不是用 `./install-app.sh` 打包安装的（`swift build` 直跑没有 Resources）。个别播放器不接入系统「正在播放」会话（按 F8 播放/暂停键对它无效的那种），这类播放器无法被控制。
+
 **每次重新安装都要重新授权辅助功能？**
 这是 ad-hoc 签名的特性（没有稳定签名身份）。一次性解决：用「钥匙串访问」创建一个免费的自签代码签名证书——
 
@@ -142,14 +147,18 @@ echo "my-codesign" > .codesign-identity
 **录屏软件里 Option 键帽一直显示按住？**
 CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显示问题，不代表系统里 Option 真被按住。以实际输入行为和日志里的释放状态为准；录屏时可关闭「显示按键」。
 
+**连按好几次 Fn 都拉不起语音，手动切一下输入法又好了？**
+两种成因。一是系统里残留了幽灵修饰键（Fn 卡在「按下」状态），发出去的就变成「Fn+Option」，豆包不认——App 现在会把无关修饰键从模拟单击里剥掉，并在日志里记一条「合成单击带上了无关修饰键」。二是豆包偶发对模拟单击完全没反应，此时 App 会自动把输入法整条重挂一遍（英文键盘布局 → 日常中文输入法 → 豆包）再试。两级补救都失败才提示「豆包语音没拉起来」，同时把输入法恢复回去，并在日志里留一条「拉起失败现场」记录当时的输入源、前台应用、修饰键状态和豆包在屏窗口。
+
 ## 它是怎么工作的
 
 - 用 `CGEventTap` 监听全局 `flagsChanged` 和 `keyDown`，识别「轻按 Fn」和 `Ctrl+Space`。监听跑在独立线程上，回调内不做任何可能阻塞的调用；tap 被系统禁用时立即自动重启，另有周期看门狗兜底。
 - 进程通过 `NSProcessInfo.beginActivity` 退出 App Nap，避免闲置后第一次按 Fn 因进程被降频而无响应（不阻止系统正常休眠）。
 - 用 Carbon `TextInputSources` (TIS) 切换输入法 / 键盘布局。
-- 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 单击；事件序列为 down/up。
-- 左 Option 单击对豆包来说既是「开始」也是「结束」，为了不让内部状态和豆包真实状态反转（豆包会因静音超时自行结束录音；Electron 应用的输入上下文滞后还会让单击落空），App 用 `CGWindowList` 探测豆包输入法进程的语音胶囊窗口作为真值源：启动后确认胶囊出现（没出现则强制焦点刷新并重发一次）、录音中周期巡检胶囊是否还在、停止前发现胶囊已消失就跳过单击。探测不可用时（比如豆包改版）自动退回旧的盲切换行为。
-- 全程不依赖 Hammerspoon 或任何脚本运行时，纯 Swift + AppKit + Carbon。
+- 触发豆包语音时，用 combined-session 事件源发送左 Option `flagsChanged` 单击；事件序列为 down/up。事件源会把会话当前的修饰键状态一并写进新事件，所以发送前会剥掉除左 Option 外的所有修饰键位——系统里残留一个幽灵 Fn，豆包收到的就是「Fn+Option」，会直接忽略。
+- 左 Option 单击对豆包来说既是「开始」也是「结束」，为了不让内部状态和豆包真实状态反转（豆包会因静音超时自行结束录音；Electron 应用的输入上下文滞后还会让单击落空），App 用 `CGWindowList` 探测豆包输入法进程的语音胶囊窗口作为真值源：启动后确认胶囊出现（没出现就分两级补救：先强制焦点刷新重发一次，仍不行就把输入法整条重挂一遍再发一次）、录音中周期巡检胶囊是否还在、停止前发现胶囊已消失就跳过单击。探测不可用时（比如豆包改版）自动退回旧的盲切换行为。
+- 「语音时暂停媒体」走系统「正在播放 (Now Playing)」媒体会话（MediaRemote 私有框架）：谁在播就暂停谁，恢复也只发给它。macOS 15.4 起该框架只对 Apple 平台二进制返回真实数据，所以实际调用发生在系统自带的 `/usr/bin/perl` 进程内——spawn perl 加载 `Resources/mrbridge.dylib` 完成查询与控制（机制同 [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)，见 `Helper/MediaRemoteBridge/`）。helper 任何失败都只记日志，不影响语音主流程。
+- 除系统自带的 perl 外，不依赖 Hammerspoon 或任何需要额外安装的脚本运行时，纯 Swift + AppKit + Carbon。
 
 ## 技术栈
 
@@ -174,6 +183,9 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 ├── assets/                             # README 图片
 ├── Resources/Info.plist                # bundle Info.plist 模板（含 ${...} 占位符）
 ├── tools/check_switch.swift            # 输入源诊断脚本
+├── Helper/MediaRemoteBridge/           # 媒体暂停 helper（perl 宿主 + MediaRemote 桥接 dylib 源码）
+│   ├── mrbridge.m                      # status / pause / play，编译进 Resources/mrbridge.dylib
+│   └── mrbridge-host.pl                # 在 Apple 签名的 perl 进程内加载 dylib
 └── Sources/DoubaoVoiceApp/
     ├── App/
     │   ├── DoubaoVoiceApp.swift        # @main 入口
@@ -189,6 +201,7 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
     │   ├── InputSourceManager.swift    # Carbon TIS 包装
     │   ├── KeyboardSimulator.swift     # 左 Option 单击
     │   ├── DoubaoVoiceHUDDetector.swift # 语音胶囊探测
+    │   ├── MediaPlaybackPauser.swift   # 语音时暂停/恢复媒体播放
     │   ├── InputSourceActivationNudge.swift          # 输入上下文刷新
     │   ├── InputSourceActivationNudgeSettings.swift  # 应用兼容性白名单
     │   ├── LoginItemManager.swift      # 登录时自动启动
