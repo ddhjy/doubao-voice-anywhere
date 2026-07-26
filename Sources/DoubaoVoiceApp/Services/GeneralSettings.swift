@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// 用户可配置的通用设置（UserDefaults 持久化），可从菜单栏「设置…」修改。
@@ -5,7 +6,7 @@ import Foundation
 /// 默认值与项目早期的硬编码常量一致：老用户升级后行为不变。
 ///
 /// 「日常输入法」影响三处行为：
-///   1. Ctrl+Space 在日常中文输入法 / 日常英文键盘布局之间轮换
+///   1. 轮换快捷键在日常中文输入法 / 日常英文键盘布局之间轮换
 ///   2. 从英文键盘布局启动豆包语音时，先桥接到日常中文输入法
 ///   3. 语音结束后找不到「之前的输入源」时，恢复到日常中文输入法
 enum GeneralSettings {
@@ -18,6 +19,10 @@ enum GeneralSettings {
         static let englishName = "NormalEnglishKeyboardLayoutName"
         static let ctrlSpaceEnabled = "CtrlSpaceSwitchEnabled"
         static let pauseMediaDuringVoice = "PauseMediaDuringVoiceInput"
+        static let voiceHotkeyKeyCode = "VoiceHotkeyKeyCode"
+        static let voiceHotkeyModifiers = "VoiceHotkeyModifiers"
+        static let cycleHotkeyKeyCode = "CycleInputSourceHotkeyKeyCode"
+        static let cycleHotkeyModifiers = "CycleInputSourceHotkeyModifiers"
     }
 
     /// 与早期版本硬编码值一致的默认配置。
@@ -27,6 +32,10 @@ enum GeneralSettings {
         static let chineseName = "Squirrel - Simplified"
         static let englishSourceID = "com.apple.keylayout.US"
         static let englishName = "U.S."
+        /// 裸 Fn 轻按，等价于快捷键可配置之前的硬编码行为。
+        static let voiceHotkey = Hotkey(keyCode: Hotkey.ModifierKey.fn.canonicalKeyCode)
+        /// Ctrl+Space，同上。
+        static let cycleInputSourceHotkey = Hotkey(keyCode: 49, modifiers: .maskControl)
     }
 
     // MARK: - 存取
@@ -47,8 +56,8 @@ enum GeneralSettings {
         UserDefaults.standard.string(forKey: Key.englishName) ?? Defaults.englishName
     }
 
-    /// Ctrl+Space 输入源轮换开关（默认开启，与早期版本一致）。
-    /// 即便开启，配置的输入源在系统里找不到时也会自动透传按键，不会吞掉 Ctrl+Space。
+    /// 输入源轮换开关（默认开启，与早期版本一致）。
+    /// 即便开启，配置的输入源在系统里找不到时也会自动透传按键，不会白吞一个快捷键。
     static var ctrlSpaceSwitchEnabled: Bool {
         get {
             UserDefaults.standard.object(forKey: Key.ctrlSpaceEnabled) as? Bool ?? true
@@ -59,7 +68,39 @@ enum GeneralSettings {
         }
     }
 
-    /// 按 Fn 说话时自动暂停正在播放的媒体、结束后恢复（默认开启）。
+    /// 开始 / 结束豆包语音的快捷键。
+    static var voiceHotkey: Hotkey {
+        get {
+            hotkey(
+                keyCodeKey: Key.voiceHotkeyKeyCode,
+                modifiersKey: Key.voiceHotkeyModifiers,
+                fallback: Defaults.voiceHotkey
+            )
+        }
+        set {
+            store(newValue, keyCodeKey: Key.voiceHotkeyKeyCode, modifiersKey: Key.voiceHotkeyModifiers)
+            Logger.shared.info("说话快捷键已设置为: \(newValue.displayString)")
+            postChanged()
+        }
+    }
+
+    /// 在日常中文输入法与日常英文键盘之间轮换的快捷键。
+    static var cycleInputSourceHotkey: Hotkey {
+        get {
+            hotkey(
+                keyCodeKey: Key.cycleHotkeyKeyCode,
+                modifiersKey: Key.cycleHotkeyModifiers,
+                fallback: Defaults.cycleInputSourceHotkey
+            )
+        }
+        set {
+            store(newValue, keyCodeKey: Key.cycleHotkeyKeyCode, modifiersKey: Key.cycleHotkeyModifiers)
+            Logger.shared.info("轮换快捷键已设置为: \(newValue.displayString)")
+            postChanged()
+        }
+    }
+
+    /// 说话时自动暂停正在播放的媒体、结束后恢复（默认开启）。
     /// 这是 2026-07 新增能力，没有对应的老版本硬编码行为；不想要的用户可在
     /// 设置里关闭。关闭后完全不触碰系统媒体会话。
     static var pauseMediaDuringVoice: Bool {
@@ -88,6 +129,24 @@ enum GeneralSettings {
 
     private static func postChanged() {
         NotificationCenter.default.post(name: changedNotification, object: nil)
+    }
+
+    /// 键码没写过就整体用默认值：`integer(forKey:)` 在未设置时返回 0，
+    /// 而 0 是个合法键码（字母 A），会把老用户的行为改掉。
+    private static func hotkey(keyCodeKey: String, modifiersKey: String, fallback: Hotkey) -> Hotkey {
+        guard let keyCode = UserDefaults.standard.object(forKey: keyCodeKey) as? Int else {
+            return fallback
+        }
+        let modifiers = UserDefaults.standard.object(forKey: modifiersKey) as? Int ?? 0
+        return Hotkey(
+            keyCode: Int64(keyCode),
+            modifiers: CGEventFlags(rawValue: UInt64(bitPattern: Int64(modifiers)))
+        )
+    }
+
+    private static func store(_ hotkey: Hotkey, keyCodeKey: String, modifiersKey: String) {
+        UserDefaults.standard.set(Int(hotkey.keyCode), forKey: keyCodeKey)
+        UserDefaults.standard.set(Int(bitPattern: UInt(hotkey.modifiers.rawValue)), forKey: modifiersKey)
     }
 
     // MARK: - 解析（配置值 → 系统里真实可用的输入源）

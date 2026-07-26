@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// 「设置」窗口：工具栏式分栏，每个分栏是一张 SwiftUI 分组 Form。
-/// - 「通用」：启动方式、说话时的媒体行为、辅助功能权限
-/// - 「输入法」：日常中文输入法 / 英文键盘布局与 Ctrl+Space 轮换开关
+/// - 「通用」：说话快捷键、启动方式、说话时的媒体行为、辅助功能权限
+/// - 「输入法」：日常中文输入法 / 英文键盘布局，以及轮换的开关与快捷键
 /// - 「应用兼容性」：需要输入上下文刷新的 App 白名单
 ///
 /// 用 `NSTabViewController` 而不是 SwiftUI 的 `Settings` scene：本 App 是手写
@@ -17,9 +17,17 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
     private let store: SettingsStore
 
-    /// - Parameter restartEventTap: 「重新连接键盘监听」的实现，由 AppDelegate 注入。
-    init(restartEventTap: @escaping () -> Void) {
-        store = SettingsStore(restartEventTap: restartEventTap)
+    /// - Parameters:
+    ///   - restartEventTap: 「重新连接键盘监听」的实现，由 AppDelegate 注入。
+    ///   - setHotkeyCaptureActive: 录制快捷键期间暂停 event tap 拦截，同上。
+    init(
+        restartEventTap: @escaping () -> Void,
+        setHotkeyCaptureActive: @escaping (Bool) -> Void
+    ) {
+        store = SettingsStore(
+            restartEventTap: restartEventTap,
+            setHotkeyCaptureActive: setHotkeyCaptureActive
+        )
 
         let tabController = NSTabViewController()
         tabController.tabStyle = .toolbar
@@ -64,6 +72,8 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         store.stopPermissionPolling()
+        // 录到一半就关窗口的话，键盘监听器和暂停中的全局拦截都得收掉。
+        store.cancelHotkeyRecording()
     }
 
     private static func paneItem<Content: View>(

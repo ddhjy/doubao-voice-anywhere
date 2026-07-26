@@ -1,11 +1,24 @@
 import SwiftUI
 
-/// 「通用」分栏：启动方式、说话时的媒体行为、辅助功能权限。
+/// 「通用」分栏：说话快捷键、启动方式、说话时的媒体行为、辅助功能权限。
 struct GeneralSettingsPane: View {
     @ObservedObject var store: SettingsStore
 
     var body: some View {
         Form {
+            Section {
+                LabeledContent("说话快捷键") {
+                    HotkeyRecorder(store: store, target: .voice)
+                }
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("按一下开始说话，再按一下结束。可以是组合键，也可以单独点一个修饰键（比如只点一下 ⌥）——单独点修饰键时，按住它配合别的键不会触发语音。")
+                    if let warning = store.voiceHotkeyWarning {
+                        SettingsWarning(text: warning)
+                    }
+                }
+            }
+
             Section {
                 Toggle("登录时自动启动", isOn: store.launchAtLogin)
                 Toggle("说话时暂停正在播放的媒体", isOn: store.pauseMediaDuringVoice)
@@ -45,7 +58,7 @@ struct GeneralSettingsPane: View {
             } header: {
                 Text("权限")
             } footer: {
-                Text("没有辅助功能权限就监听不到 Fn 键。授权后通常几秒内自动生效，没生效时点「重新连接键盘监听」。")
+                Text("没有辅助功能权限就监听不到快捷键。授权后通常几秒内自动生效，没生效时点「重新连接键盘监听」。")
             }
         }
         .formStyle(.grouped)

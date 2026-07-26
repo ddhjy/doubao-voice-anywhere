@@ -10,7 +10,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var permissionRetryTimer: Timer?
     private var keepAliveActivity: NSObjectProtocol?
     private lazy var preferencesWindowController = PreferencesWindowController(
-        restartEventTap: { [weak self] in self?.restartTap(nil) }
+        restartEventTap: { [weak self] in self?.restartTap(nil) },
+        setHotkeyCaptureActive: { [weak self] active in
+            self?.voiceController.setHotkeyCaptureActive(active)
+        }
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,13 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         // 后台菜单栏 App 闲置后会进入 App Nap，被降频/挂起的进程来不及响应
-        // 事件回调，第一次按 Fn 会因 tap 超时被系统放行（表现为"没反应"）。
+        // 事件回调，第一次按快捷键会因 tap 超时被系统放行（表现为"没反应"）。
         // 这里申请常驻活跃退出 App Nap；AllowingIdleSystemSleep 不阻止系统正常休眠。
         keepAliveActivity = ProcessInfo.processInfo.beginActivity(
             options: .userInitiatedAllowingIdleSystemSleep,
             reason: "保持全局键盘事件监听即时响应"
         )
-        Logger.shared.info("已申请退出 App Nap，保证闲置后第一次 Fn 即时响应")
+        Logger.shared.info("已申请退出 App Nap，保证闲置后第一次按快捷键即时响应")
 
         installStatusItem()
         observeAlerts()
@@ -56,7 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 状态栏
 
-    private static let defaultStatusItemToolTip = "豆包随时说 — 按 Fn 开始 / 结束语音输入"
+    private static var defaultStatusItemToolTip: String {
+        "豆包随时说 — 按 \(GeneralSettings.voiceHotkey.displayString) 开始 / 结束语音输入"
+    }
+
     private static let statusItemLength: CGFloat = 24.5
     private static let statusIconPointSize: CGFloat = 15.5
 
@@ -138,7 +144,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let toggleItem = NSMenuItem(title: "开始 / 结束豆包语音（等同于按 Fn）", action: #selector(toggleVoice(_:)), keyEquivalent: "")
+        let toggleItem = NSMenuItem(
+            title: "开始 / 结束豆包语音（等同于按 \(GeneralSettings.voiceHotkey.displayString)）",
+            action: #selector(toggleVoice(_:)),
+            keyEquivalent: ""
+        )
         toggleItem.target = self
         menu.addItem(toggleItem)
 
@@ -251,13 +261,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let titleSuffix = version.map { " \($0)" } ?? ""
 
-        let ctrlSpaceLine: String
+        let cycleHotkey = GeneralSettings.cycleInputSourceHotkey.displayString
+        let cycleLine: String
         if GeneralSettings.ctrlSpaceSwitchEnabled,
            let chinese = DoubaoVoiceController.resolvedNormalChineseInputSource(),
            let english = DoubaoVoiceController.resolvedNormalEnglishLayout() {
-            ctrlSpaceLine = "按 Ctrl + Space：在「\(chinese.value)」和「\(english.value)」之间轮换，不会切到豆包。"
+            cycleLine = "按 \(cycleHotkey)：在「\(chinese.value)」和「\(english.value)」之间轮换，不会切到豆包。"
         } else {
-            ctrlSpaceLine = "Ctrl + Space 轮换当前未启用，可在「设置…」里开启。"
+            cycleLine = "输入源轮换当前未启用，可在「设置…」里开启。"
         }
 
         let pauseMediaLine = GeneralSettings.pauseMediaDuringVoice
@@ -267,11 +278,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "豆包随时说\(titleSuffix)"
         alert.informativeText = """
-        按一下 Fn：开始或结束豆包语音输入。
+        按一下 \(GeneralSettings.voiceHotkey.displayString)：开始或结束豆包语音输入。
         \(pauseMediaLine)
-        \(ctrlSpaceLine)
+        \(cycleLine)
 
-        纯原生 macOS App，不依赖 Hammerspoon 等任何脚本运行时。
+        两个快捷键都能在「设置…」里改，纯原生 macOS App，不依赖 Hammerspoon 等任何脚本运行时。
         """
         alert.addButton(withTitle: "好")
         alert.runModal()

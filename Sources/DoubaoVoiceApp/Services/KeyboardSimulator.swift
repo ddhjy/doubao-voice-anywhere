@@ -10,6 +10,18 @@ enum KeyboardSimulator {
     /// macOS 虚拟键码：左 Option。
     static let leftOptionKeyCode: CGKeyCode = 58
 
+    /// 合成事件的自识别标记（"DVAP"）。
+    ///
+    /// 我们自己发的 Option 单击会绕回本 App 的 event tap。用户一旦把某个快捷键
+    /// 设成单独点 Option，这一击就会被当成用户按键，触发语音又发一击，来回递归。
+    /// 打上标记，事件回调认出来直接透传。
+    private static let syntheticMarker: Int64 = 0x4456_4150
+
+    /// 是不是本 App 自己合成的事件。
+    static func isSynthetic(_ event: CGEvent) -> Bool {
+        event.getIntegerValueField(.eventSourceUserData) == syntheticMarker
+    }
+
     // 与 NXEvent 的位掩码对齐（参见 IOKit/hidsystem/IOLLEvent.h）。
     private static let rawMaskDeviceLeftAlternate: UInt64 = 0x0000_0020
     private static let rawMaskDeviceRightAlternate: UInt64 = 0x0000_0040
@@ -58,6 +70,8 @@ enum KeyboardSimulator {
         if event.type != .flagsChanged {
             event.type = .flagsChanged
         }
+
+        event.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
 
         // CGEvent 会把 eventSource 当前的修饰键状态一并写进新事件。系统里只要残留一个
         // 幽灵修饰键（Fn 卡住最常见，录屏软件、外接键盘、被吞掉的 keyUp 都可能留下），

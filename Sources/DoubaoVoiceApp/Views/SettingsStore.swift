@@ -35,6 +35,11 @@ final class SettingsStore: ObservableObject {
         let message: String
     }
 
+    /// 两个可配置的快捷键。
+    enum HotkeyTarget {
+        case voice, cycle
+    }
+
     // MARK: - 派生状态
     //
     // 枚举输入源要走 Carbon、读自启动状态要摸磁盘，都不适合每次 body 求值时重算，
@@ -47,11 +52,23 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var launchAtLoginEnabled = false
     @Published private(set) var accessibilityTrusted = false
 
+    @Published private(set) var voiceHotkey = GeneralSettings.voiceHotkey
+    @Published private(set) var cycleHotkey = GeneralSettings.cycleInputSourceHotkey
+    @Published private(set) var voiceHotkeyWarning: String?
+    @Published private(set) var cycleHotkeyWarning: String?
+    @Published private(set) var cycleSwitchEnabled = true
+    @Published private(set) var recordingHotkeyTarget: HotkeyTarget?
+
     @Published var compatibilitySelection: Set<String> = []
     @Published var alert: AlertContent?
 
     /// 「重新连接键盘监听」的实现在 AppDelegate，设置窗口只借用，不自己持有 event tap。
     private let restartEventTap: () -> Void
+
+    /// 录制快捷键期间暂停 event tap 的拦截，同样由 AppDelegate 注入。
+    private let setHotkeyCaptureActive: (Bool) -> Void
+
+    private let captureSession = HotkeyCaptureSession()
 
     /// NSOpenPanel 需要一个宿主窗口才能以 sheet 形式弹出。
     weak var hostWindow: NSWindow?
@@ -61,8 +78,9 @@ final class SettingsStore: ObservableObject {
     private var permissionTimer: Timer?
     private var refreshScheduled = false
 
-    init(restartEventTap: @escaping () -> Void) {
+    init(restartEventTap: @escaping () -> Void, setHotkeyCaptureActive: @escaping (Bool) -> Void) {
         self.restartEventTap = restartEventTap
+        self.setHotkeyCaptureActive = setHotkeyCaptureActive
 
         let center = NotificationCenter.default
         observers = [
@@ -89,6 +107,7 @@ final class SettingsStore: ObservableObject {
     }
 
     deinit {
+        captureSession.cancel()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         if let enabledSourcesObserver = enabledSourcesObserver {
             DistributedNotificationCenter.default().removeObserver(enabledSourcesObserver)
@@ -114,6 +133,12 @@ final class SettingsStore: ObservableObject {
             configuredName: GeneralSettings.normalEnglishKeyboardLayoutName
         )
         inputSourceWarnings = computeInputSourceWarnings()
+
+        voiceHotkey = GeneralSettings.voiceHotkey
+        cycleHotkey = GeneralSettings.cycleInputSourceHotkey
+        voiceHotkeyWarning = Self.typingKeyWarning(for: voiceHotkey)
+        cycleHotkeyWarning = Self.typingKeyWarning(for: cycleHotkey)
+        cycleSwitchEnabled = GeneralSettings.ctrlSpaceSwitchEnabled
 
         compatibilityApps = InputSourceActivationNudgeSettings.bundleIDs.sorted().map {
             CompatibilityApp(
@@ -163,18 +188,73 @@ final class SettingsStore: ObservableObject {
             if let fallback = DoubaoVoiceController.resolvedNormalChineseInputSource() {
                 lines.append("配置的中文输入法未启用，暂时改用「\(fallback.value)」。")
             } else {
-                lines.append("系统里没有已启用的中文输入法，Ctrl+Space 轮换已自动暂停（按键交回系统）。")
+                lines.append("系统里没有已启用的中文输入法，输入源轮换已自动暂停（按键交回系统）。")
             }
         }
         if !InputSourceManager.isSourceEnabled(id: GeneralSettings.normalEnglishKeyboardLayoutID) {
             if let fallback = DoubaoVoiceController.resolvedNormalEnglishLayout() {
                 lines.append("配置的英文键盘未启用，暂时改用「\(fallback.value)」。")
             } else {
-                lines.append("系统里没有已启用的键盘布局，Ctrl+Space 轮换已自动暂停（按键交回系统）。")
+                lines.append("系统里没有已启用的键盘布局，输入源轮换已自动暂停（按键交回系统）。")
             }
         }
 
         return lines
+    }
+
+    private static func typingKeyWarning(for hotkey: Hotkey) -> String? {
+        guard hotkey.swallowsCommonTypingKey else { return nil }
+        return "「\(hotkey.displayString)」没有配任何修饰键，会被全局拦截，正常打字时敲不出这个键。"
+    }
+
+    // MARK: - 快捷键
+
+    func hotkey(for target: HotkeyTarget) -> Hotkey {
+        switch target {
+        case .voice: return voiceHotkey
+        case .cycle: return cycleHotkey
+        }
+    }
+
+    /// 开始录制。录制期间要让 event tap 让路，否则已生效的快捷键会先被它吞掉。
+    func beginHotkeyRecording(_ target: HotkeyTarget) {
+        recordingHotkeyTarget = target
+        setHotkeyCaptureActive(true)
+        captureSession.start(
+            onCapture: { [weak self] in self?.apply($0, to: target) },
+            onFinish: { [weak self] in
+                self?.recordingHotkeyTarget = nil
+                self?.setHotkeyCaptureActive(false)
+            }
+        )
+    }
+
+    /// 收掉正在进行的录制。窗口关闭时必须调用，否则监听器和暂停状态会一直挂着。
+    func cancelHotkeyRecording() {
+        captureSession.cancel()
+    }
+
+    private func apply(_ hotkey: Hotkey, to target: HotkeyTarget) {
+        switch target {
+        case .voice:
+            guard hotkey != GeneralSettings.voiceHotkey else { return }
+            guard available(hotkey, against: GeneralSettings.cycleInputSourceHotkey, usedBy: "轮换输入源")
+            else { return }
+            GeneralSettings.voiceHotkey = hotkey
+        case .cycle:
+            guard hotkey != GeneralSettings.cycleInputSourceHotkey else { return }
+            guard available(hotkey, against: GeneralSettings.voiceHotkey, usedBy: "说话") else { return }
+            GeneralSettings.cycleInputSourceHotkey = hotkey
+        }
+    }
+
+    private func available(_ hotkey: Hotkey, against other: Hotkey, usedBy: String) -> Bool {
+        guard hotkey == other else { return true }
+        alert = AlertContent(
+            title: "这个快捷键已经被占用",
+            message: "「\(hotkey.displayString)」正用于\(usedBy)，请换一个。"
+        )
+        return false
     }
 
     // MARK: - 绑定
@@ -341,6 +421,20 @@ final class SettingsStore: ObservableObject {
         }
         compatibilitySelection.removeAll()
         refresh()
+    }
+}
+
+/// 各分栏 footer 里共用的橙色警告行。
+struct SettingsWarning: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
     }
 }
 

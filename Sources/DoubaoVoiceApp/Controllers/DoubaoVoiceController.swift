@@ -3,9 +3,11 @@ import CoreGraphics
 import Foundation
 
 /// 主状态机：
-/// - Fn 轻按：启动/停止豆包语音
-/// - Fn + 其它键：不触发，仅记录
-/// - Ctrl+Space：仅在日常中文输入法与日常英文键盘之间轮换
+/// - 说话快捷键（默认 Fn 轻按）：启动/停止豆包语音
+/// - 轮换快捷键（默认 Ctrl+Space）：仅在日常中文输入法与日常英文键盘之间轮换
+///
+/// 两个快捷键都可在设置里改（见 `Hotkey`），裸修饰键形态要求按下期间没配合
+/// 别的键才算一次轻按。
 final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 配置
@@ -33,12 +35,12 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 时间常量（单位：秒）
 
-    private let actionAfterFnUpDelay: TimeInterval = 0.2
+    private let actionAfterHotkeyDelay: TimeInterval = 0.2
     private let voiceTriggerAfterSwitchDelay: TimeInterval = 0.08
     private let inputSourceSwitchTimeout: TimeInterval = 2.0
     private let inputSourcePollInterval: TimeInterval = 0.01
     /// 重挂载输入法时单跳的等待上限。这条路径已经是失败补救，三跳串起来不能太久，
-    /// 否则用户在整个过程里按 Fn 都会被「仍在处理中」挡掉。实测单跳 <100ms。
+    /// 否则用户在整个过程里按快捷键都会被「仍在处理中」挡掉。实测单跳 <100ms。
     private let remountStepTimeout: TimeInterval = 0.6
     private let inputMethodBridgeDelay: TimeInterval = 0.15
     /// 胶囊探测未生效时，停止后到恢复输入法的固定延迟（老行为，兜底用）。
@@ -66,22 +68,42 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 键码常量
 
-    private let keyCodeFn: Int64 = 63
-    // 新款键盘的 Fn/Globe 有时还会额外发一个 keyDown 179。
+    /// 新款键盘的 Fn/Globe 除了 flagsChanged，有时还会额外发一个 keyDown 179。
     private let keyCodeFnKeyDown: Int64 = 179
-    private let keyCodeSpace: Int64 = 49
 
     // MARK: - 状态
 
     // 以下状态只在主线程访问。
     private var previousInputSource: InputSource?
-    private var sourceBeforeFnTap: InputSource?
+    private var sourceBeforeVoiceHotkey: InputSource?
     private var lastNonDoubaoInputSource: InputSource?
     private var voiceTransitionInProgress: Bool = false
 
     // 以下状态只在事件监听线程访问（EventTapDelegate 回调都在该线程上）。
-    private var fnIsDown: Bool = false
-    private var fnWasUsedWithOtherKey: Bool = false
+
+    /// 裸修饰键形态的按下跟踪：按下期间来了别的键或鼠标就不算一次轻按。
+    private struct BareModifierTracker {
+        var isDown = false
+        var usedWithOtherInput = false
+
+        mutating func reset() {
+            isDown = false
+            usedWithOtherInput = false
+        }
+    }
+
+    /// 修饰键按下 / 抬起时的边沿判定结果。
+    private enum BareModifierEdge {
+        case none
+        case pressed
+        /// 抬起，且按下期间干净——一次有效的轻按。
+        case tapped
+        /// 抬起，但按下期间配合了别的输入，不算轻按。
+        case cancelled
+    }
+
+    private var voiceModifier = BareModifierTracker()
+    private var cycleModifier = BareModifierTracker()
 
     // 主线程写、事件监听线程读，用锁保护。
     private let voiceActiveLock = NSLock()
@@ -99,22 +121,37 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
-    // Ctrl+Space 拦截门：只有「开关开启 && 日常中文/英文输入源都可用」时才拦截，
-    // 否则透传给系统，避免把用户的 Ctrl+Space 吞进一个注定失败的切换。
-    // 解析涉及 TIS，不能在事件监听线程做，所以主线程预计算、事件线程只读缓存。
-    private let ctrlSpaceGateLock = NSLock()
-    private var _ctrlSpaceInterceptionActive = false
-    private var ctrlSpaceInterceptionActive: Bool {
-        get {
-            ctrlSpaceGateLock.lock()
-            defer { ctrlSpaceGateLock.unlock() }
-            return _ctrlSpaceInterceptionActive
+    /// 事件监听线程唯一能读的快捷键状态。
+    ///
+    /// 读配置要摸 UserDefaults、解析输入源要走 TIS，都不能进事件回调（硬约束 1），
+    /// 所以主线程预先算好一份快照，事件线程只读。
+    private struct HotkeySnapshot {
+        var voice: Hotkey
+        var cycle: Hotkey
+        /// 轮换拦截门：只有「开关开启 && 日常中文/英文输入源都可用」时才拦截，
+        /// 否则透传给系统，避免把按键吞进一个注定失败的切换。
+        var cycleInterceptionActive: Bool
+        /// 设置窗口正在录制快捷键：全部透传。我们的 tap 挂在 headInsert，
+        /// 不让路的话录制控件根本收不到已生效的那个快捷键。
+        var captureActive: Bool
+
+        /// Fn 被任一快捷键用作裸修饰键。它额外发的 keyDown 179 要跟着一起吞。
+        var usesFnAsBareModifier: Bool {
+            voice.bareModifier == .fn || cycle.bareModifier == .fn
         }
-        set {
-            ctrlSpaceGateLock.lock()
-            _ctrlSpaceInterceptionActive = newValue
-            ctrlSpaceGateLock.unlock()
-        }
+    }
+
+    private let hotkeyStateLock = NSLock()
+    private var _hotkeySnapshot = HotkeySnapshot(
+        voice: GeneralSettings.Defaults.voiceHotkey,
+        cycle: GeneralSettings.Defaults.cycleInputSourceHotkey,
+        cycleInterceptionActive: false,
+        captureActive: false
+    )
+    private var hotkeySnapshot: HotkeySnapshot {
+        hotkeyStateLock.lock()
+        defer { hotkeyStateLock.unlock() }
+        return _hotkeySnapshot
     }
 
     private var pendingActionTimer: DispatchWorkItem?
@@ -154,10 +191,13 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
 
         let voiceLine = doubaoVoiceActive
-            ? "豆包语音 录音中，按 Fn 结束"
-            : "豆包语音 待机中，按 Fn 开始"
+            ? "豆包语音 录音中，按 \(voiceHotkeyLabel) 结束"
+            : "豆包语音 待机中，按 \(voiceHotkeyLabel) 开始"
         return "\(label)\n\(voiceLine)"
     }
+
+    /// 面向用户的说话快捷键写法，用于提示与日志（主线程调用）。
+    private var voiceHotkeyLabel: String { GeneralSettings.voiceHotkey.displayString }
 
     // MARK: - 生命周期
 
@@ -167,19 +207,18 @@ final class DoubaoVoiceController: EventTapDelegate {
             self?.rememberLastNonDoubaoInputSource()
         }
         enabledSourcesObserver = InputSourceManager.observeEnabledInputSourcesChanged { [weak self] in
-            self?.refreshCtrlSpaceGate()
+            self?.refreshHotkeyGate()
         }
         settingsObserver = NotificationCenter.default.addObserver(
             forName: GeneralSettings.changedNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshCtrlSpaceGate()
+            self?.refreshHotkeyGate()
         }
-        refreshCtrlSpaceGate()
+        refreshHotkeyGate()
 
         Logger.shared.info("目标输入法 source id: \(Self.targetInputSourceID)")
-        Logger.shared.info("Fn 轻按：启动/停止豆包语音输入")
         Logger.shared.info("输入源激活补丁 App 白名单: \(InputSourceActivationNudgeSettings.bundleIDs.sorted().joined(separator: ", "))")
     }
 
@@ -204,80 +243,133 @@ final class DoubaoVoiceController: EventTapDelegate {
         mediaPauser.resumeAfterVoiceSession()
     }
 
-    /// 重新计算 Ctrl+Space 是否应当拦截（主线程调用；配置或系统输入法列表变化时触发）。
-    private func refreshCtrlSpaceGate() {
+    /// 重算快捷键快照（主线程调用；配置或系统输入法列表变化时触发）。
+    private func refreshHotkeyGate() {
+        let voice = GeneralSettings.voiceHotkey
+        let cycle = GeneralSettings.cycleInputSourceHotkey
         let enabled = GeneralSettings.ctrlSpaceSwitchEnabled
         let chinese = Self.resolvedNormalChineseInputSource()
         let english = Self.resolvedNormalEnglishLayout()
         let active = enabled && chinese != nil && english != nil
 
-        if active != ctrlSpaceInterceptionActive || !gateLoggedOnce {
-            gateLoggedOnce = true
-            if active {
-                Logger.shared.info("Ctrl+Space 轮换已启用: \(chinese!.value) ↔ \(english!.value)")
-            } else if !enabled {
-                Logger.shared.info("Ctrl+Space 轮换已在设置中关闭，按键透传给系统")
-            } else {
-                Logger.shared.warn("Ctrl+Space 轮换已自动停用（日常输入法不可用：中文=\(chinese?.value ?? "无") 英文=\(english?.value ?? "无")），按键透传给系统")
-            }
+        hotkeyStateLock.lock()
+        let changed = _hotkeySnapshot.voice != voice
+            || _hotkeySnapshot.cycle != cycle
+            || _hotkeySnapshot.cycleInterceptionActive != active
+        _hotkeySnapshot.voice = voice
+        _hotkeySnapshot.cycle = cycle
+        _hotkeySnapshot.cycleInterceptionActive = active
+        hotkeyStateLock.unlock()
+
+        guard changed || !gateLoggedOnce else { return }
+        gateLoggedOnce = true
+
+        Logger.shared.info("说话快捷键: \(voice.displayString)")
+        if active {
+            Logger.shared.info("\(cycle.displayString) 轮换已启用: \(chinese!.value) ↔ \(english!.value)")
+        } else if !enabled {
+            Logger.shared.info("输入源轮换已在设置中关闭，\(cycle.displayString) 透传给系统")
+        } else {
+            Logger.shared.warn("输入源轮换已自动停用（日常输入法不可用：中文=\(chinese?.value ?? "无") 英文=\(english?.value ?? "无")），\(cycle.displayString) 透传给系统")
         }
-        ctrlSpaceInterceptionActive = active
     }
 
     private var gateLoggedOnce = false
+
+    /// 设置窗口录制快捷键期间暂停全部拦截（主线程调用）。
+    func setHotkeyCaptureActive(_ active: Bool) {
+        hotkeyStateLock.lock()
+        _hotkeySnapshot.captureActive = active
+        hotkeyStateLock.unlock()
+        Logger.shared.debug(active ? "开始录制快捷键，事件拦截已暂停" : "快捷键录制结束，事件拦截已恢复")
+    }
 
     // MARK: - EventTapDelegate
     //
     // 这些回调运行在事件监听线程上，必须立即返回：
     // 只做键码/flags 判断和轻量状态更新，任何可能阻塞的调用（TIS、日志外的 IO）
     // 都派发到主队列异步执行。回调里一旦卡超过约 1 秒，系统会禁用整个 tap，
-    // 造成"按 Fn 没反应"。
+    // 造成"按快捷键没反应"。
 
     func handleFlagsChanged(event: CGEvent) -> Bool {
+        // 我们自己发出去的 Option 单击会绕回这里，不能当成用户按键。
+        guard !KeyboardSimulator.isSynthetic(event) else { return false }
+
+        let snapshot = hotkeySnapshot
+        guard !snapshot.captureActive else {
+            // 录制期间的按下 / 抬起我们看不全，跟踪状态留着只会脏，清掉重来。
+            voiceModifier.reset()
+            cycleModifier.reset()
+            return false
+        }
+
         let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-        // 我们只关心 Fn 键（keycode 63）。其它修饰键透传，避免误吞。
-        guard keycode == keyCodeFn else { return false }
+        let flags = event.flags
+        var swallow = false
 
-        let fnPressed = event.flags.contains(.maskSecondaryFn)
-
-        if fnPressed && !fnIsDown {
-            fnIsDown = true
-            fnWasUsedWithOtherKey = false
-            // TIS 读取可能阻塞（服务冷启动时长达秒级），不能放在回调里。
-            DispatchQueue.main.async { [weak self] in
-                self?.sourceBeforeFnTap = InputSourceManager.nowSource()
-            }
-            return true
-        }
-
-        if !fnPressed && fnIsDown {
-            fnIsDown = false
-            let usedWithOtherKey = fnWasUsedWithOtherKey
-            fnWasUsedWithOtherKey = false
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                if usedWithOtherKey {
-                    self.sourceBeforeFnTap = nil
-                } else {
-                    self.scheduleDoubaoToggle()
+        if snapshot.voice.matchesModifierKeyCode(keycode) {
+            let edge = trackBareModifier(
+                &voiceModifier,
+                pressed: snapshot.voice.modifierIsPressed(in: flags)
+            )
+            switch edge {
+            case .pressed:
+                // TIS 读取可能阻塞（服务冷启动时长达秒级），不能放在回调里。
+                DispatchQueue.main.async { [weak self] in
+                    self?.sourceBeforeVoiceHotkey = InputSourceManager.nowSource()
                 }
+            case .tapped:
+                DispatchQueue.main.async { [weak self] in self?.scheduleDoubaoToggle() }
+            case .cancelled:
+                DispatchQueue.main.async { [weak self] in self?.sourceBeforeVoiceHotkey = nil }
+            case .none:
+                break
             }
-            return true
+            if edge != .none, snapshot.voice.swallowsEvent { swallow = true }
         }
 
-        return false
+        if snapshot.cycle.matchesModifierKeyCode(keycode) {
+            let edge = trackBareModifier(
+                &cycleModifier,
+                pressed: snapshot.cycle.modifierIsPressed(in: flags)
+            )
+            if edge == .tapped, snapshot.cycleInterceptionActive {
+                DispatchQueue.main.async { [weak self] in self?.toggleNormalInputSource() }
+            }
+            if edge != .none, snapshot.cycle.swallowsEvent { swallow = true }
+        }
+
+        return swallow
     }
 
     func handleKeyDown(event: CGEvent) -> Bool {
-        let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) == 1
+        guard !KeyboardSimulator.isSynthetic(event) else { return false }
 
-        if fnIsDown && !isFnKeyDownEvent(keycode) {
-            fnWasUsedWithOtherKey = true
+        let snapshot = hotkeySnapshot
+        guard !snapshot.captureActive else {
+            voiceModifier.reset()
+            cycleModifier.reset()
+            return false
         }
 
+        let keycode = event.getIntegerValueField(.keyboardEventKeycode)
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) == 1
+        let flags = event.flags
+
+        markBareModifiersUsedWithOtherInput(keycode: keycode, snapshot: snapshot)
+
+        // Fn/Globe 自己那条 keyDown 只要它被当作快捷键就得吞，
+        // 否则系统会在语音之外再弹一个 Emoji 面板 / 听写。
         if isFnKeyDownEvent(keycode) {
-            return true
+            return snapshot.usesFnAsBareModifier
+        }
+
+        // 说话快捷键要排在「任意按键结束语音」前面：它本身就是那个停止键。
+        if snapshot.voice.matchesKeyDown(keyCode: keycode, flags: flags) {
+            if !isRepeat {
+                DispatchQueue.main.async { [weak self] in self?.scheduleDoubaoToggle() }
+            }
+            return snapshot.voice.swallowsEvent
         }
 
         if doubaoVoiceActive {
@@ -289,29 +381,25 @@ final class DoubaoVoiceController: EventTapDelegate {
             return false
         }
 
-        guard keycode == keyCodeSpace else { return false }
+        guard snapshot.cycle.matchesKeyDown(keyCode: keycode, flags: flags) else { return false }
 
-        // 开关关闭或配置的日常输入源不可用时透传，让系统按默认行为处理 Ctrl+Space。
-        guard ctrlSpaceInterceptionActive else { return false }
-
-        let flags = event.flags
-        let onlyControl = flags.contains(.maskControl)
-            && !flags.contains(.maskCommand)
-            && !flags.contains(.maskAlternate)
-            && !flags.contains(.maskShift)
-            && !flags.contains(.maskSecondaryFn)
-
-        guard onlyControl else { return false }
+        // 开关关闭或配置的日常输入源不可用时透传，让系统按默认行为处理这个键。
+        guard snapshot.cycleInterceptionActive else { return false }
 
         if !isRepeat {
             DispatchQueue.main.async { [weak self] in
                 self?.toggleNormalInputSource()
             }
         }
-        return true
+        return snapshot.cycle.swallowsEvent
     }
 
     func handleMouseDown(event: CGEvent, type: CGEventType) -> Bool {
+        guard !KeyboardSimulator.isSynthetic(event) else { return false }
+
+        // 按着 Option 拖拽复制这类操作不该被当成「单独点了一下 Option」。
+        markBareModifiersUsedWithOtherInput(keycode: nil, snapshot: hotkeySnapshot)
+
         if doubaoVoiceActive {
             DispatchQueue.main.async { [weak self] in
                 self?.markDoubaoVoiceStoppedByExternalActivity("检测到鼠标点击 \(type) 结束豆包语音")
@@ -321,26 +409,61 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     /// tap 被系统禁用又恢复后调用（事件监听线程）。
-    /// 禁用期间可能只收到了 Fn down 而丢了 Fn up，把按键跟踪状态清零，
-    /// 避免 fnIsDown 卡死导致后续轻按被误判成"Fn+其它键"。
+    /// 禁用期间可能只收到了修饰键的按下而丢了抬起，把跟踪状态清零，
+    /// 避免 isDown 卡死导致后续轻按被误判成「配合了其它键」。
     func eventTapWasInterrupted() {
-        fnIsDown = false
-        fnWasUsedWithOtherKey = false
+        voiceModifier.reset()
+        cycleModifier.reset()
         DispatchQueue.main.async { [weak self] in
-            self?.sourceBeforeFnTap = nil
+            self?.sourceBeforeVoiceHotkey = nil
         }
     }
 
-    private func isFnKeyDownEvent(_ keycode: Int64) -> Bool {
-        keycode == keyCodeFn || keycode == keyCodeFnKeyDown
+    private func trackBareModifier(
+        _ tracker: inout BareModifierTracker,
+        pressed: Bool
+    ) -> BareModifierEdge {
+        if pressed && !tracker.isDown {
+            tracker.isDown = true
+            tracker.usedWithOtherInput = false
+            return .pressed
+        }
+        if !pressed && tracker.isDown {
+            let used = tracker.usedWithOtherInput
+            tracker.reset()
+            return used ? .cancelled : .tapped
+        }
+        return .none
     }
 
-    // MARK: - Fn 单按调度
+    /// 裸修饰键按着的时候来了别的输入，这一次就不算轻按了。
+    /// `keyCode` 为 nil 表示来源是鼠标点击。
+    private func markBareModifiersUsedWithOtherInput(keycode: Int64?, snapshot: HotkeySnapshot) {
+        if voiceModifier.isDown, !isOwnKeyCode(keycode, of: snapshot.voice) {
+            voiceModifier.usedWithOtherInput = true
+        }
+        if cycleModifier.isDown, !isOwnKeyCode(keycode, of: snapshot.cycle) {
+            cycleModifier.usedWithOtherInput = true
+        }
+    }
+
+    private func isOwnKeyCode(_ keycode: Int64?, of hotkey: Hotkey) -> Bool {
+        guard let keycode = keycode else { return false }
+        if hotkey.matchesModifierKeyCode(keycode) { return true }
+        // Fn/Globe 额外发的那条 keyDown 是它自己，不算「配合了其它键」。
+        return hotkey.bareModifier == .fn && keycode == keyCodeFnKeyDown
+    }
+
+    private func isFnKeyDownEvent(_ keycode: Int64) -> Bool {
+        keycode == Hotkey.ModifierKey.fn.canonicalKeyCode || keycode == keyCodeFnKeyDown
+    }
+
+    // MARK: - 说话快捷键调度
 
     private func scheduleDoubaoToggle() {
-        Logger.shared.debug("检测到 Fn 轻按，\(actionAfterFnUpDelay)s 后切换豆包语音")
+        Logger.shared.debug("检测到说话快捷键 \(voiceHotkeyLabel)，\(actionAfterHotkeyDelay)s 后切换豆包语音")
         cancelPendingActionTimer()
-        // 立刻取消挂起的输入法恢复：否则「停止后 0.8-1.0s 内再按 Fn」时，
+        // 立刻取消挂起的输入法恢复：否则「停止后 0.8-1.0s 内再按一次」时，
         // 恢复计时器会赶在本次切换前触发，把输入法闪切回去再切回豆包。
         cancelRestoreImeTimer()
         let work = DispatchWorkItem { [weak self] in
@@ -349,7 +472,7 @@ final class DoubaoVoiceController: EventTapDelegate {
             self.toggleDoubaoVoice()
         }
         pendingActionTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + actionAfterFnUpDelay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + actionAfterHotkeyDelay, execute: work)
     }
 
     private func cancelPendingActionTimer() {
@@ -364,10 +487,10 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 豆包语音切换
 
-    /// 等价于按一次 Fn：启动 / 停止豆包语音，菜单栏可直接调用。
+    /// 等价于按一次说话快捷键：启动 / 停止豆包语音，菜单栏可直接调用。
     func toggleDoubaoVoice() {
         guard !voiceTransitionInProgress else {
-            Logger.shared.warn("豆包语音启动/停止仍在处理中，忽略本次 Fn")
+            Logger.shared.warn("豆包语音启动/停止仍在处理中，忽略本次触发")
             return
         }
 
@@ -402,8 +525,8 @@ final class DoubaoVoiceController: EventTapDelegate {
         // 用户开口前媒体就能静下来。所有失败结束路径都会触发恢复（见
         // scheduleRestorePreviousIME 与 finishVoiceTransition 两个收口）。
         mediaPauser.pauseForVoiceSession()
-        previousInputSource = restoreTargetFrom(sourceBeforeFnTap ?? InputSourceManager.nowSource())
-        sourceBeforeFnTap = nil
+        previousInputSource = restoreTargetFrom(sourceBeforeVoiceHotkey ?? InputSourceManager.nowSource())
+        sourceBeforeVoiceHotkey = nil
 
         let triggerVoice: () -> Void = {
             if !self.isDoubaoIMEActive() && !self.setDoubaoIME() {
@@ -488,7 +611,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     ///
     /// 单击可能落空：Electron 应用（Notion 等）的文本输入上下文经常滞后于
     /// TIS 切换，按键发出时上下文还挂在旧输入法上，豆包收不到。以前这里盲目
-    /// 把状态置成「录音中」，一旦落空，后续每次 Fn 的语义都是反的。
+    /// 把状态置成「录音中」，一旦落空，后续每次按快捷键的语义都是反的。
     private func fireVoiceStartTap(attempt: VoiceStartAttempt) {
         KeyboardSimulator.tapLeftOption {
             self.verifyVoiceStarted(
@@ -503,7 +626,7 @@ final class DoubaoVoiceController: EventTapDelegate {
             doubaoVoiceActive = true
             finishVoiceTransition()
             startHudWatch()
-            Logger.shared.debug("豆包语音输入已启动（语音胶囊已确认出现），等待再次按 Fn 停止")
+            Logger.shared.debug("豆包语音输入已启动（语音胶囊已确认出现），等待再次按 \(voiceHotkeyLabel) 停止")
             return
         }
 
@@ -555,7 +678,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
-    /// 重挂输入法也救不回来：如实置为未启动，让下一次 Fn 走干净的启动流程，
+    /// 重挂输入法也救不回来：如实置为未启动，让下一次触发走干净的启动流程，
     /// 不留下「App 以为在录音、豆包其实没在录」的脏状态。
     private func giveUpVoiceStart() {
         doubaoVoiceActive = false
@@ -564,7 +687,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         // 别把用户扔在豆包输入法上：拉起失败时它只是个用不了的空壳，
         // 用户还得自己切回去才能打字。
         scheduleRestorePreviousIME(reason: "豆包语音启动失败")
-        showAlert("豆包语音没拉起来，请再按一次 Fn")
+        showAlert("豆包语音没拉起来，请再按一次 \(voiceHotkeyLabel)")
     }
 
     /// 拉起失败时把现场一次性记全，便于下次复现时直接判定失败类型：
@@ -739,7 +862,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     private func scheduleRestorePreviousIME(reason: String) {
         cancelRestoreImeTimer()
 
-        // 录音已经结束（Fn 停止 / 外部活动 / 胶囊消失 / 启动失败），马上把
+        // 录音已经结束（快捷键停止 / 外部活动 / 胶囊消失 / 启动失败），马上把
         // 媒体播放还给用户，不等下面的识别收尾——音乐响起不影响已采集的音频。
         mediaPauser.resumeAfterVoiceSession()
 
@@ -770,7 +893,7 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     /// 轮询等待豆包收尾：胶囊连续 imeFinalizeQuietTicks 个周期不可见，
     /// 视为识别结果已替换上屏，恢复输入法；超时则强制恢复。
-    /// 轮询链挂在 restoreImeTimer 上，新一轮 Fn 动作会经 cancelRestoreImeTimer 整体取消。
+    /// 轮询链挂在 restoreImeTimer 上，新一轮语音动作会经 cancelRestoreImeTimer 整体取消。
     private func scheduleRestorePoll(deadline: Date, quietTicks: Int) {
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
@@ -856,7 +979,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     /// - Parameter force: true 表示用户显式要求恢复（菜单动作），跳过所有守卫。
     private func restorePreviousIME(force: Bool = false) {
         if !force {
-            // 恢复计时器可能晚到：新一轮 Fn 动作已经开始（或马上开始）时，
+            // 恢复计时器可能晚到：新一轮语音动作已经开始（或马上开始）时，
             // 输入法归属权在那个流程手里，这里不要抢着切回去。
             if voiceTransitionInProgress || pendingActionTimer != nil || doubaoVoiceActive {
                 Logger.shared.debug("有进行中的语音切换或录音，跳过本次输入法恢复")
@@ -931,7 +1054,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     private func waitForDoubaoIME(onTimeout: (() -> Void)? = nil, then onReady: @escaping () -> Void) {
         waitForInputSource(
             description: "豆包输入法",
-            timeoutMessage: "豆包输入法没切过去，再按一次 Fn",
+            timeoutMessage: "豆包输入法没切过去，再按一次 \(voiceHotkeyLabel)",
             isReady: { [weak self] in self?.isDoubaoIMEActive() ?? false },
             onTimeout: onTimeout
         ) {
@@ -984,22 +1107,22 @@ final class DoubaoVoiceController: EventTapDelegate {
         )
     }
 
-    // MARK: - Ctrl+Space 轮换
+    // MARK: - 输入源轮换
 
     private func toggleNormalInputSource() {
         // 拦截门开启才会走到这里；解析结果仍可能在拦截后一瞬间变化，做兜底检查。
         guard let chinese = Self.resolvedNormalChineseInputSource(),
               let english = Self.resolvedNormalEnglishLayout()
         else {
-            Logger.shared.warn("Ctrl+Space: 日常输入源不可用，跳过本次切换")
-            refreshCtrlSpaceGate()
+            Logger.shared.warn("输入源轮换: 日常输入源不可用，跳过本次切换")
+            refreshHotkeyGate()
             return
         }
 
         let currentSourceID = InputSourceManager.currentSourceID()
         let currentMethod = InputSourceManager.currentMethod()
         let currentLayout = InputSourceManager.currentLayout()
-        Logger.shared.debug("Ctrl+Space: currentSourceID=\(currentSourceID ?? "nil"), currentMethod=\(currentMethod ?? "nil"), currentLayout=\(currentLayout ?? "nil")")
+        Logger.shared.debug("输入源轮换: currentSourceID=\(currentSourceID ?? "nil"), currentMethod=\(currentMethod ?? "nil"), currentLayout=\(currentLayout ?? "nil")")
 
         let isDoubao = currentSourceID == Self.targetInputSourceID
         let isNormalChinese = (chinese.sourceID != nil && currentSourceID == chinese.sourceID)
@@ -1007,12 +1130,12 @@ final class DoubaoVoiceController: EventTapDelegate {
 
         if isDoubao || isNormalChinese {
             let ok = selectNormalEnglishKeyboardLayout()
-            Logger.shared.debug("Ctrl+Space: 切换到英文键盘布局 \(english.value), 结果: \(ok)")
+            Logger.shared.debug("输入源轮换: 切换到英文键盘布局 \(english.value), 结果: \(ok)")
             return
         }
 
         let ok = selectNormalChineseInputMethod()
-        Logger.shared.debug("Ctrl+Space: 切换到中文输入法 \(chinese.value), 结果: \(ok)")
+        Logger.shared.debug("输入源轮换: 切换到中文输入法 \(chinese.value), 结果: \(ok)")
         if ok {
             waitForNormalChineseInputMethod {}
         }
