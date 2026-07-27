@@ -14,5 +14,17 @@
     <description>豆包随时说的版本更新</description>
     <language>zh-CN</language>
     <!-- NEW_ITEM_ANCHOR：新条目插在这一行下面，tools/update-appcast.sh 靠它定位，别删。 -->
+    <item>
+      <title>1.0.4</title>
+      <link>https://github.com/ddhjy/doubao-voice-anywhere/releases/tag/v1.0.4</link>
+      <sparkle:version>1.0.4</sparkle:version>
+      <sparkle:shortVersionString>1.0.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <pubDate>Mon, 27 Jul 2026 03:27:29 +0000</pubDate>
+      <description><![CDATA[
+  <p><strong>Full Changelog</strong>: https://github.com/ddhjy/doubao-voice-anywhere/compare/v1.0.3...v1.0.4</p>
+      ]]></description>
+      <enclosure url="https://github.com/ddhjy/doubao-voice-anywhere/releases/download/v1.0.4/DoubaoVoiceApp-1.0.4.zip" length="5709817" type="application/octet-stream" sparkle:edSignature="gEHQD7B+RteifDN6sAMnDNwtuncNcBe1umqjJcMDsJOCGg0ZbQHhLv2qQsuz7ZLIq+1+TlYVq6qNrgusnXPnBg==" />
+    </item>
   </channel>
 </rss>
