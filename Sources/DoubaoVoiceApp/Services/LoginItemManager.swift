@@ -1,7 +1,10 @@
 import Foundation
 
 enum LoginItemManager {
-    private static let label = "com.doubaovoiceapp.menubar.autostart"
+    // label 从 bundle ID 派生，让开发版（….menubar.dev）与正式版的登录项
+    // 互不覆盖；正式版结果与旧版硬编码值一致，保持向后兼容。
+    private static let label =
+        "\(Bundle.main.bundleIdentifier ?? "com.doubaovoiceapp.menubar").autostart"
     private static let launchAgentFileName = "\(label).plist"
 
     static var isEnabled: Bool {

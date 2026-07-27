@@ -21,7 +21,6 @@ BUNDLE_ID="com.doubaovoiceapp.menubar"
 DISPLAY_NAME="豆包随时说"
 EXECUTABLE_NAME="$APP_NAME"
 DIST_DIR="$SCRIPT_DIR/dist"
-BUNDLE_PATH="$DIST_DIR/$BUNDLE_NAME"
 
 # shellcheck source=codesign-lib.sh
 source "$SCRIPT_DIR/codesign-lib.sh"
@@ -29,15 +28,18 @@ CODE_SIGN_IDENTITY="$(resolve_sign_identity)"
 
 TARGET_ARCHS=("$(uname -m)")
 DO_CLEAN=0
+DEV_BUILD=0
 
 usage() {
   cat <<EOF
 用法：
-  $(basename "$0") [--native] [--universal] [--clean] [--help]
+  $(basename "$0") [--native] [--universal] [--dev] [--clean] [--help]
 
 选项：
   --native     只编译本机架构（默认）
   --universal  编译 arm64 + x86_64
+  --dev        打包成开发版「豆包随时说 Dev.app」（独立 bundle ID，
+               与正式版权限、配置互不干扰，可共存）
   --clean      编译前执行 swift package clean
   --help       显示此帮助
 EOF
@@ -47,11 +49,21 @@ for arg in "$@"; do
   case "$arg" in
     --native)    TARGET_ARCHS=("$(uname -m)") ;;
     --universal) TARGET_ARCHS=("arm64" "x86_64") ;;
+    --dev)       DEV_BUILD=1 ;;
     --clean)     DO_CLEAN=1 ;;
     --help|-h)   usage; exit 0 ;;
     *) echo "[错误] 未知参数：$arg" >&2; usage; exit 1 ;;
   esac
 done
+
+# 开发版用独立的名字和 bundle ID：TCC 授权、UserDefaults、登录项、日志
+# 都按 bundle ID 隔离，正式版（GitHub Release）与开发版互不干扰。
+if [[ "$DEV_BUILD" -eq 1 ]]; then
+  BUNDLE_NAME="豆包随时说 Dev.app"
+  BUNDLE_ID="com.doubaovoiceapp.menubar.dev"
+  DISPLAY_NAME="豆包随时说 Dev"
+fi
+BUNDLE_PATH="$DIST_DIR/$BUNDLE_NAME"
 
 info() { printf '[信息] %s\n' "$1"; }
 

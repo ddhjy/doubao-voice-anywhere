@@ -29,7 +29,7 @@ final class Logger {
             .appendingPathComponent("DoubaoVoiceApp", isDirectory: true)
         {
             try? fm.createDirectory(at: logsDir, withIntermediateDirectories: true)
-            let url = logsDir.appendingPathComponent("app.log")
+            let url = logsDir.appendingPathComponent(Self.logFileName)
             Self.rotateIfNeeded(at: url, in: logsDir, fileManager: fm)
             if !fm.fileExists(atPath: url.path) {
                 fm.createFile(atPath: url.path, contents: nil)
@@ -43,7 +43,12 @@ final class Logger {
         }
     }
 
-    /// 启动时做一次大小检查：超过上限就把当前日志挪到 app.log.1（只保留一份归档），
+    /// 开发版（bundle ID 以 .dev 结尾）写独立的日志文件，与正式版互不混写。
+    private static var logFileName: String {
+        Bundle.main.bundleIdentifier?.hasSuffix(".dev") == true ? "app-dev.log" : "app.log"
+    }
+
+    /// 启动时做一次大小检查：超过上限就把当前日志挪到 <名字>.1（只保留一份归档），
     /// 避免日志无限增长。
     private static let maxLogFileSize: UInt64 = 20 * 1024 * 1024
 
@@ -53,7 +58,7 @@ final class Logger {
               size > maxLogFileSize
         else { return }
 
-        let backupURL = logsDir.appendingPathComponent("app.log.1")
+        let backupURL = logsDir.appendingPathComponent("\(logFileName).1")
         try? fm.removeItem(at: backupURL)
         try? fm.moveItem(at: url, to: backupURL)
     }

@@ -59,8 +59,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - 状态栏
 
+    /// 取 bundle 显示名（正式版「豆包随时说」，开发版「豆包随时说 Dev」），
+    /// 让菜单栏提示和「关于」弹窗能区分当前跑的是哪个版本。
+    static var appDisplayName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "豆包随时说"
+    }
+
     private static var defaultStatusItemToolTip: String {
-        "豆包随时说 — 按 \(GeneralSettings.voiceHotkey.displayString) 开始 / 结束语音输入"
+        "\(appDisplayName) — 按 \(GeneralSettings.voiceHotkey.displayString) 开始 / 结束语音输入"
     }
 
     private static let statusItemLength: CGFloat = 24.5
@@ -276,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             : "语音时暂停媒体当前未启用，可在「设置…」里开启。"
 
         let alert = NSAlert()
-        alert.messageText = "豆包随时说\(titleSuffix)"
+        alert.messageText = "\(Self.appDisplayName)\(titleSuffix)"
         alert.informativeText = """
         按一下 \(GeneralSettings.voiceHotkey.displayString)：开始或结束豆包语音输入。
         \(pauseMediaLine)

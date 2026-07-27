@@ -59,6 +59,7 @@ cd doubao-voice-anywhere
 ./build.sh --clean               # 编译前先 swift package clean
 ./install-app.sh --skip-build    # 不重新编译，复用 dist 中现有产物
 ./install-app.sh --system        # 安装到 /Applications（需要管理员权限）
+./install-app.sh --dev           # 安装开发版（与正式版共存，见「贡献」）
 ```
 
 ### 关于代码签名
@@ -284,6 +285,19 @@ NOTARY_KEY_PATH=~/AuthKey_XXXXXXXXXX.p8 NOTARY_KEY_ID=XXXXXXXXXX \
 - 事件监听线程的回调里不引入阻塞调用（见 `EventTapController` 的注释）
 - 面向用户的文案用简体中文
 
+日常在用 Release 正式版、又要改代码验证？用开发版模式：
+
+```bash
+./install-app.sh --dev
+```
+
+它会装出一个「豆包随时说 Dev.app」，bundle ID 是独立的
+`com.doubaovoiceapp.menubar.dev`——辅助功能授权、配置、登录项、日志
+（`app-dev.log`）全部与正式版隔离，开发版首次运行授权一次辅助功能后，
+反复重装也不用再授权，正式版不受任何影响。两个版本不要同时运行（都会
+响应说话快捷键），安装脚本会自动退出另一个版本；验证完退出 Dev 版，
+重新打开正式版即可。
+
 ## 卸载
 
 ```bash
@@ -293,6 +307,10 @@ rm -rf ~/Applications/豆包语音输入助手.app   # 从旧版本升级过的�
 rm -f ~/Library/LaunchAgents/com.doubaovoiceapp.menubar.autostart.plist
 rm -rf ~/Library/Logs/DoubaoVoiceApp
 defaults delete com.doubaovoiceapp.menubar 2>/dev/null || true
+# 装过开发版（--dev）的话，顺带清理：
+rm -rf "$HOME/Applications/豆包随时说 Dev.app"
+rm -f ~/Library/LaunchAgents/com.doubaovoiceapp.menubar.dev.autostart.plist
+defaults delete com.doubaovoiceapp.menubar.dev 2>/dev/null || true
 # 系统设置 → 隐私与安全性 → 辅助功能：把"豆包随时说"那一项移除
 ```
 

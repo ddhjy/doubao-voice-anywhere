@@ -4,6 +4,7 @@
 #
 # 用法：
 #   ./install-app.sh                    # 默认安装到 ~/Applications
+#   ./install-app.sh --dev              # 安装开发版「豆包随时说 Dev」（与正式版共存）
 #   ./install-app.sh --system           # 安装到 /Applications（需要管理员权限）
 #   ./install-app.sh --no-launch        # 安装但不启动
 #   ./install-app.sh --skip-build       # 跳过编译，直接复制 dist 中已有的产物
@@ -14,22 +15,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-BUNDLE_NAME="豆包随时说.app"
+RELEASE_BUNDLE_NAME="豆包随时说.app"
+DEV_BUNDLE_NAME="豆包随时说 Dev.app"
+BUNDLE_NAME="$RELEASE_BUNDLE_NAME"
 # 2026-07 改名前的包名；安装时自动退出旧进程并清理旧包
 LEGACY_BUNDLE_NAME="豆包语音输入助手.app"
 BUNDLE_ID="com.doubaovoiceapp.menubar"
 EXECUTABLE_NAME="DoubaoVoiceApp"
-DIST_BUNDLE="$SCRIPT_DIR/dist/$BUNDLE_NAME"
 TARGET_DIR="$HOME/Applications"
 DO_LAUNCH=1
 DO_BUILD=1
+DEV_BUILD=0
 
 usage() {
   cat <<EOF
 用法：
-  $(basename "$0") [--system] [--no-launch] [--skip-build] [--help]
+  $(basename "$0") [--dev] [--system] [--no-launch] [--skip-build] [--help]
 
 选项：
+  --dev           构建并安装开发版「豆包随时说 Dev」：独立 bundle ID，
+                  辅助功能授权、配置、登录项、日志都与正式版隔离，
+                  可以和 GitHub Release 正式版共存（但不要同时运行）
   --system        安装到 /Applications（默认安装到 ~/Applications）
   --no-launch     安装后不自动启动
   --skip-build    跳过 ./build.sh，直接复制 dist 中已有的产物
@@ -39,6 +45,7 @@ EOF
 
 for arg in "$@"; do
   case "$arg" in
+    --dev)        DEV_BUILD=1 ;;
     --system)     TARGET_DIR="/Applications" ;;
     --no-launch)  DO_LAUNCH=0 ;;
     --skip-build) DO_BUILD=0 ;;
@@ -47,12 +54,20 @@ for arg in "$@"; do
   esac
 done
 
+if [[ "$DEV_BUILD" -eq 1 ]]; then
+  BUNDLE_NAME="$DEV_BUNDLE_NAME"
+  BUNDLE_ID="com.doubaovoiceapp.menubar.dev"
+fi
+DIST_BUNDLE="$SCRIPT_DIR/dist/$BUNDLE_NAME"
+
 info() { printf '[信息] %s\n' "$1"; }
 error() { printf '[错误] %s\n' "$1" >&2; }
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  info "执行 ./build.sh"
-  ./build.sh
+  build_args=()
+  [[ "$DEV_BUILD" -eq 1 ]] && build_args+=(--dev)
+  info "执行 ./build.sh ${build_args[*]}"
+  ./build.sh ${build_args[@]+"${build_args[@]}"}
 fi
 
 if [[ ! -d "$DIST_BUNDLE" ]]; then
@@ -68,9 +83,14 @@ DIST_PROCESS_PATH="$DIST_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 kill_existing_instances() {
   local pids=()
   local pid
+  # 正式版和开发版都退出：两个版本同时运行会都响应说话快捷键（双触发）。
   local paths=(
     "$TARGET_PROCESS_PATH"
     "$DIST_PROCESS_PATH"
+    "$HOME/Applications/$RELEASE_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
+    "/Applications/$RELEASE_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
+    "$HOME/Applications/$DEV_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
+    "/Applications/$DEV_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
     "$HOME/Applications/$LEGACY_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
     "/Applications/$LEGACY_BUNDLE_NAME/Contents/MacOS/$EXECUTABLE_NAME"
   )
@@ -142,6 +162,10 @@ info "已安装到：$TARGET_BUNDLE"
 
 # ---- 启动 ----
 if [[ "$DO_LAUNCH" -eq 1 ]]; then
+  DISPLAY_NAME="${BUNDLE_NAME%.app}"
+  LOG_FILE_NAME="app.log"
+  [[ "$DEV_BUILD" -eq 1 ]] && LOG_FILE_NAME="app-dev.log"
+
   info "启动应用"
   open -n "$TARGET_BUNDLE"
   activate_installed_app || true
@@ -151,12 +175,19 @@ if [[ "$DO_LAUNCH" -eq 1 ]]; then
 
 第一次运行时：
   1. 系统会弹出"辅助功能"权限请求；点击"打开系统设置"，把
-     "豆包随时说" 加入授权列表，并打开开关。
+     "$DISPLAY_NAME" 加入授权列表，并打开开关。
   2. 授权后应用会自动开始监听（几秒内生效）；如果没生效，
      点菜单栏图标 -> "重新连接键盘监听"。
   3. 之后轻按一次 Fn 启动豆包语音；再按一次结束。
   4. 快捷键、日常输入法与输入源轮换可在菜单栏 -> "设置…" 里配置。
 
-日志位置：~/Library/Logs/DoubaoVoiceApp/app.log
+日志位置：~/Library/Logs/DoubaoVoiceApp/$LOG_FILE_NAME
 EOF
+
+  if [[ "$DEV_BUILD" -eq 1 ]]; then
+    cat <<EOF
+提示：若正式版之前在运行，已被自动退出（两个版本会抢同一个快捷键）；
+      开发验证结束后，从启动台 / Raycast 重新打开"豆包随时说"即可。
+EOF
+  fi
 fi

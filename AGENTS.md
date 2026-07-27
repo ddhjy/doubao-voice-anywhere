@@ -3,8 +3,9 @@
 ## 构建与验证
 
 - `./install-app.sh` 是默认编译脚本：编译 → 打包 `.app` → 安装到 `~/Applications` → 启动。
-- 只验证编译用 `swift build`；只打包不安装用 `./build.sh`。
-- 没有单元测试；行为验证靠日志 `~/Library/Logs/DoubaoVoiceApp/app.log`。
+- 本机日常用的是 GitHub Release 正式版（`/Applications`），开发验证一律 `./install-app.sh --dev`：装成「豆包随时说 Dev.app」（bundle ID `com.doubaovoiceapp.menubar.dev`），TCC 授权 / UserDefaults / 登录项 / 日志与正式版按 bundle ID 隔离；两个版本会抢同一个快捷键，所以安装脚本会先退出另一版本的运行实例，别绕过这个逻辑。
+- 只验证编译用 `swift build`；只打包不安装用 `./build.sh`（加 `--dev` 同上）。
+- 没有单元测试；行为验证靠日志 `~/Library/Logs/DoubaoVoiceApp/app.log`（开发版写 `app-dev.log`）。
 - 发布靠推 `v*` tag 触发 `.github/workflows/release.yml`：universal 编译 → Developer ID 签名 → Apple 公证 → 装订票据 → 建 GitHub Release。CI 凭证用 `./setup-ci-secrets.sh` 配一次。
 - universal 包必须逐架构编译再 `lipo` 合并（见 `build.sh`）。别改回一条 `swift build --arch arm64 --arch x86_64`：那会切到 Xcode build system，在 Xcode 26 上必崩在「The Xcode build system has terminated」。
 - App 图标是入库产物（`Resources/AppIcon.icns` + `AppIcon.icon` + `Assets.car`），改设计编辑 `tools/GenerateAppIcon.swift` 后执行 `swift tools/GenerateAppIcon.swift` 重新生成（编 `Assets.car` 需要 Xcode 26 的 actool）。icns 走 `CFBundleIconFile` 服务 macOS 13–15，`Assets.car` 走 `CFBundleIconName` 让 macOS 26+ 满版显示——只有 icns 时 Tahoe 会把图标缩小垫在白色底板上。CI（macos-14 runner）没有 Xcode 26，`build.sh` 只拷贝不生成。
