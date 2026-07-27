@@ -586,8 +586,10 @@ final class DoubaoVoiceController: EventTapDelegate {
         voiceTransitionInProgress = false
         // 启动失败的静默分支（切不到豆包输入法、等待超时、重试放弃等）
         // 不经过 scheduleRestorePreviousIME，在这里兜底恢复媒体播放。
+        // restoreImeTimer 非空说明收尾流程正在等豆包释放麦克风，媒体恢复
+        // 归那条链管（见 scheduleRestorePreviousIME），这里不要提前拉起。
         // resumeAfterVoiceSession 幂等，与另一个收口重复触发无害。
-        if !doubaoVoiceActive {
+        if !doubaoVoiceActive && restoreImeTimer == nil {
             mediaPauser.resumeAfterVoiceSession()
         }
     }
@@ -862,9 +864,11 @@ final class DoubaoVoiceController: EventTapDelegate {
     private func scheduleRestorePreviousIME(reason: String) {
         cancelRestoreImeTimer()
 
-        // 录音已经结束（快捷键停止 / 外部活动 / 胶囊消失 / 启动失败），马上把
-        // 媒体播放还给用户，不等下面的识别收尾——音乐响起不影响已采集的音频。
-        mediaPauser.resumeAfterVoiceSession()
+        // 媒体恢复不在这里立刻做，而是等下面的收尾流程确认豆包会话真正结束
+        // （胶囊消失）后再做：「优化识别中」阶段麦克风会话还没释放，蓝牙耳机
+        // 仍处于通话档（HFP）、扬声器仍带回声消除配置，这时拉起音乐会先以
+        // 偏大的音量播出，等豆包释放麦克风、音频路由切回正常档才跳回去，
+        // 听感就是「刚恢复声音偏大，过一会儿才正常」。
 
         // 胶囊探测生效时，用「胶囊消失」作为豆包识别结果已上屏的真值信号，
         // 等它收尾后再恢复输入法，避免把「优化识别中」的未上屏内容切丢。
@@ -882,6 +886,8 @@ final class DoubaoVoiceController: EventTapDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.restoreImeTimer = nil
+            // 盲等场景下拿不到麦克风释放的真值信号，固定延迟后一并恢复媒体。
+            self.mediaPauser.resumeAfterVoiceSession()
             self.restorePreviousIME()
         }
         restoreImeTimer = work
@@ -902,11 +908,16 @@ final class DoubaoVoiceController: EventTapDelegate {
             let ticks = self.hudVisibleNow() ? 0 : quietTicks + 1
             if ticks >= self.imeFinalizeQuietTicks {
                 Logger.shared.debug("豆包识别结果已上屏（胶囊已消失），恢复之前输入法")
+                // 胶囊已消失 = 麦克风已释放、音频路由已切回正常播放档，
+                // 此刻恢复媒体不会再出现音量先大后小的跳变。
+                self.mediaPauser.resumeAfterVoiceSession()
                 self.restorePreviousIME()
                 return
             }
             if Date() >= deadline {
                 Logger.shared.warn("等待豆包识别结果上屏超时（胶囊仍在屏），强制恢复输入法，未上屏内容可能丢失")
+                // 超时兜底：宁可音量有一次跳变，也不能让媒体一直停着。
+                self.mediaPauser.resumeAfterVoiceSession()
                 self.restorePreviousIME()
                 return
             }
