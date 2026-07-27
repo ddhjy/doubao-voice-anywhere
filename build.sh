@@ -124,6 +124,19 @@ clang "${helper_arch_flags[@]}" -dynamiclib -fobjc-arc -O2 \
   "$HELPER_SRC_DIR/mrbridge.m"
 cp "$HELPER_SRC_DIR/mrbridge-host.pl" "$BUNDLE_PATH/Contents/Resources/"
 
+# ---- App 图标 ----
+#
+# AppIcon.icns（macOS 13–15）与 Assets.car（macOS 26+ 满版图标）都是入库产物；
+# 改设计请编辑 tools/GenerateAppIcon.swift 后执行 swift tools/GenerateAppIcon.swift
+# 重新生成（编 Assets.car 需要 Xcode 26 的 actool）。CI 只负责拷贝。
+for icon_artifact in "AppIcon.icns" "Assets.car"; do
+  if [[ ! -f "$SCRIPT_DIR/Resources/$icon_artifact" ]]; then
+    echo "[错误] 找不到图标产物：Resources/$icon_artifact（用 swift tools/GenerateAppIcon.swift 生成）" >&2
+    exit 1
+  fi
+  cp "$SCRIPT_DIR/Resources/$icon_artifact" "$BUNDLE_PATH/Contents/Resources/"
+done
+
 VERSION="${APP_VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 

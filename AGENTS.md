@@ -7,6 +7,7 @@
 - 没有单元测试；行为验证靠日志 `~/Library/Logs/DoubaoVoiceApp/app.log`。
 - 发布靠推 `v*` tag 触发 `.github/workflows/release.yml`：universal 编译 → Developer ID 签名 → Apple 公证 → 装订票据 → 建 GitHub Release。CI 凭证用 `./setup-ci-secrets.sh` 配一次。
 - universal 包必须逐架构编译再 `lipo` 合并（见 `build.sh`）。别改回一条 `swift build --arch arm64 --arch x86_64`：那会切到 Xcode build system，在 Xcode 26 上必崩在「The Xcode build system has terminated」。
+- App 图标是入库产物（`Resources/AppIcon.icns` + `AppIcon.icon` + `Assets.car`），改设计编辑 `tools/GenerateAppIcon.swift` 后执行 `swift tools/GenerateAppIcon.swift` 重新生成（编 `Assets.car` 需要 Xcode 26 的 actool）。icns 走 `CFBundleIconFile` 服务 macOS 13–15，`Assets.car` 走 `CFBundleIconName` 让 macOS 26+ 满版显示——只有 icns 时 Tahoe 会把图标缩小垫在白色底板上。CI（macos-14 runner）没有 Xcode 26，`build.sh` 只拷贝不生成。
 - 有真实证书时 `build.sh` 一律带 Hardened Runtime（公证前提）；安全时间戳要联网，只由 `CODE_SIGN_TIMESTAMP=1` 打开，本地默认关着好让断网也能签。
 
 ## 架构速览

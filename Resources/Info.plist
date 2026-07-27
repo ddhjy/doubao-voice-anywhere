@@ -8,6 +8,10 @@
     <string>${BUNDLE_DISPLAY_NAME}</string>
     <key>CFBundleExecutable</key>
     <string>${BUNDLE_EXECUTABLE}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_IDENTIFIER}</string>
     <key>CFBundleInfoDictionaryVersion</key>
