@@ -1,11 +1,13 @@
 import AppKit
 import Foundation
 
-/// 语音输入期间暂停系统「正在播放 (Now Playing)」的媒体，豆包会话收尾后恢复。
+/// 语音输入期间暂停系统「正在播放 (Now Playing)」的媒体，会话收尾后恢复。
 ///
-/// 恢复时机由控制器把握：必须等豆包释放麦克风（语音胶囊消失）之后再恢复，
-/// 否则音乐会先经由通话档音频路由放出来（蓝牙耳机 HFP 档音量偏响），
-/// 豆包收尾时路由切回正常档，音量再跳一次。
+/// 恢复不能在收尾点立刻做：豆包放掉麦克风前，蓝牙耳机停在通话档（HFP，
+/// 音量映射与正常播放不同），这时拉起音乐会先偏响、路由切回时再跳一次。
+/// 胶囊消失也不是可靠信号（实测路由恢复晚于胶囊消失），所以正常收尾走
+/// resumeAfterVoiceSessionWhenRouteSettles()，由 AudioRouteSettler 盯着
+/// CoreAudio 信号等路由真正退回，再经静音预热后恢复。
 ///
 /// 汽水音乐、抖音、Music、Spotify、浏览器视频等都注册系统媒体会话，谁在播
 /// 就暂停谁；会议通话类音频（Zoom/飞书）不注册该会话，不会被误暂停。
@@ -34,9 +36,16 @@ final class MediaPlaybackPauser {
     /// 「没在播放」，导致快速连续说话时第二段的暂停被漏掉。
     private let recentResumeWindow: TimeInterval = 1.0
 
+    /// 会话收尾后等待音频路由退回正常档的上限。超过就直接恢复（可能带一次
+    /// 音量跳变）：常见于麦克风被别的 App 长期占用（比如正在开会）。
+    private let routeSettleTimeout: TimeInterval = 6.0
+
     // MARK: - 状态
 
     private let workQueue = DispatchQueue(label: "MediaPlaybackPauser", qos: .userInitiated)
+
+    /// 音频路由守门人：恢复播放前等蓝牙耳机从通话档退回 A2DP（见其顶部注释）。
+    private let routeSettler = AudioRouteSettler()
 
     // 以下状态只在主线程访问。
     /// 当前这次语音会话是否由本 App 暂停了媒体（true 时结束后必须恢复）。
@@ -84,12 +93,47 @@ final class MediaPlaybackPauser {
         }
     }
 
-    /// 语音会话结束：若本 App 暂停过媒体则恢复播放。幂等，可在多个收口重复调用。
+    /// 语音会话结束：立即恢复播放。幂等，可在多个收口重复调用。
+    ///
+    /// 只用于麦克风从未被占用（启动失败）或等不起（App 退出）的场景；
+    /// 正常收尾请走 resumeAfterVoiceSessionWhenRouteSettles()，否则会撞上
+    /// 蓝牙通话档窗口，音乐先偏响再跳回正常。
     func resumeAfterVoiceSession() {
         // 作废飞行中的 status 查询：会话已结束，迟到的结果不许再触发暂停。
+        // 同时也作废还在等路由沉降的恢复（那份闭包的代际号已过期）。
         generation += 1
-
         guard didPause else { return }
+        performResume()
+    }
+
+    /// 语音会话结束：等音频路由退回正常档（豆包放掉麦克风、蓝牙耳机从通话档
+    /// 切回 A2DP）后再恢复播放，恢复前先做静音预热。幂等，可重复调用。
+    ///
+    /// 等待期间若新语音会话开始（pauseForVoiceSession 会推进代际号），本次
+    /// 恢复自动作废，待恢复状态（didPause）顺延给新会话，由它的收尾来恢复。
+    func resumeAfterVoiceSessionWhenRouteSettles() {
+        // 会话已结束：作废飞行中的 status 查询，语义与立即版一致。
+        generation += 1
+        guard didPause else { return }
+        let gen = generation
+
+        routeSettler.waitUntilSettled(timeout: routeSettleTimeout) { [weak self] settled in
+            guard let self = self, gen == self.generation, self.didPause else {
+                Logger.shared.debug("等待音频路由期间恢复已被接管（新会话或立即恢复），本次不再处理")
+                return
+            }
+            if !settled {
+                Logger.shared.warn("音频路由未在时限内退回正常档，直接恢复播放（可能有一次音量跳变）")
+            }
+            self.routeSettler.primeOutputThenCall { [weak self] in
+                guard let self = self, gen == self.generation, self.didPause else { return }
+                self.performResume()
+            }
+        }
+    }
+
+    /// 真正发出 play 命令并清理状态。只能由两个 resume 入口调用。
+    private func performResume() {
         didPause = false
         lastResumeAt = Date()
 
