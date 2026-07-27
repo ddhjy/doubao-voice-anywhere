@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 「通用」分栏：说话快捷键、启动方式、说话时的媒体行为、辅助功能权限。
+/// 「通用」分栏：说话快捷键、启动方式、说话时的媒体行为、辅助功能权限、自动更新。
 struct GeneralSettingsPane: View {
     @ObservedObject var store: SettingsStore
 
@@ -59,6 +59,23 @@ struct GeneralSettingsPane: View {
                 Text("权限")
             } footer: {
                 Text("没有辅助功能权限就监听不到快捷键。授权后通常几秒内自动生效，没生效时点「重新连接键盘监听」。")
+            }
+
+            if store.updatesEnabled {
+                Section {
+                    LabeledContent("当前版本") {
+                        Text(store.appVersion)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("自动检查更新", isOn: store.automaticUpdateChecks)
+                    Button("现在检查…") {
+                        store.checkForUpdates()
+                    }
+                } header: {
+                    Text("更新")
+                } footer: {
+                    Text("每天在后台查一次，有新版本会弹窗询问，确认后才下载安装。安装完成会自动重启。")
+                }
             }
         }
         .formStyle(.grouped)

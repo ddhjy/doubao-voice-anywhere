@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private let voiceController = DoubaoVoiceController()
     private let eventTap = EventTapController()
+    private let updateController = UpdateController()
 
     private var statusItem: NSStatusItem?
     private var permissionRetryTimer: Timer?
@@ -13,7 +14,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         restartEventTap: { [weak self] in self?.restartTap(nil) },
         setHotkeyCaptureActive: { [weak self] active in
             self?.voiceController.setHotkeyCaptureActive(active)
-        }
+        },
+        updateBridge: SettingsStore.UpdateBridge(
+            isEnabled: updateController.isEnabled,
+            automaticChecksEnabled: { [updateController] in
+                updateController.automaticallyChecksForUpdates
+            },
+            setAutomaticChecksEnabled: { [updateController] enabled in
+                updateController.automaticallyChecksForUpdates = enabled
+            },
+            checkNow: { [updateController] in updateController.checkForUpdates() }
+        )
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -179,6 +190,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(logItem)
 
         menu.addItem(NSMenuItem.separator())
+
+        // 开发版没有更新源，不显示这一项（见 UpdateController）。
+        if updateController.isEnabled {
+            let updateItem = NSMenuItem(title: "检查更新…", action: nil, keyEquivalent: "")
+            // 交给 Sparkle 自己管：它会按 canCheckForUpdates 处理灰显，
+            // 更新进行中时这一项自动不可点，不用我们写 validateMenuItem。
+            updateItem.target = updateController.menuItemTarget
+            updateItem.action = updateController.menuItemAction
+            menu.addItem(updateItem)
+        }
 
         let aboutItem = NSMenuItem(title: "关于豆包随时说", action: #selector(showAbout(_:)), keyEquivalent: "")
         aboutItem.target = self

@@ -38,6 +38,7 @@ jobs:
             echo "version=$VERSION"
             echo "short_version=$SHORT_VERSION"
             echo "dmg=DoubaoVoiceApp-$VERSION.dmg"
+            echo "zip=DoubaoVoiceApp-$VERSION.zip"
           } >> "$GITHUB_OUTPUT"
 
       - name: Swift version
@@ -114,7 +115,10 @@ jobs:
       - name: 编译并签名（universal）
         env:
           APP_VERSION: ${{ steps.version.outputs.short_version }}
-          BUILD_NUMBER: ${{ github.run_number }}
+          # Sparkle 拿 CFBundleVersion 比较版本新旧，所以它必须跟着版本号走。
+          # 早先用的是 github.run_number：公证失败重跑一次旧 tag，它的 build number
+          # 就会超过更新的版本，appcast 里会出现「旧版本更新」的错乱。
+          BUILD_NUMBER: ${{ steps.version.outputs.short_version }}
           CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           CODE_SIGN_TIMESTAMP: '1' # 公证要求安全时间戳
         run: ./build.sh --universal
@@ -127,6 +131,12 @@ jobs:
           lipo -info "$APP/Contents/MacOS/DoubaoVoiceApp"
           lipo -info "$APP/Contents/Resources/mrbridge.dylib"
           plutil -lint "$APP/Contents/Info.plist"
+
+          # 自动更新的三个前提：框架在位、feed 没被漏掉、公钥没被漏掉。
+          # 少任何一个，发出去的包就是个收不到更新的死版本。
+          test -d "$APP/Contents/Frameworks/Sparkle.framework"
+          /usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$APP/Contents/Info.plist"
 
           codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -151,6 +161,20 @@ jobs:
 
           # 票据装订进 .app 本身：用户离线时 Gatekeeper 也能查到公证结果。
           xcrun stapler staple "$APP"
+
+      - name: 打包 Sparkle 更新用 zip
+        run: |
+          set -euo pipefail
+          APP="dist/豆包随时说.app"
+
+          # 自动更新走 zip 而不是复用 DMG：解压更快、更可靠（Sparkle 官方推荐）。
+          # DMG 留给首次下载的用户。
+          #
+          # 必须用 ditto：zip -r 会跟随符号链接，而 Sparkle.framework 的 Versions/
+          # 全靠符号链接组织，跟随之后签名直接作废，用户端装不上。
+          # 这一步排在 staple 之后，压进去的是已经装订好票据的 .app。
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP" "dist/${{ steps.version.outputs.zip }}"
 
       - name: 打包 DMG
         env:
@@ -198,11 +222,25 @@ jobs:
           lipo -info "$MOUNT/豆包随时说.app/Contents/MacOS/DoubaoVoiceApp"
           hdiutil detach "$MOUNT" -quiet
 
+          # 自动更新装的是 zip 里那一份，同样得单独验：这里坏了，
+          # 用户点了更新才会发现，比 DMG 出问题更难察觉。
+          echo "---- 更新 zip 内的 .app ----"
+          UNZIP_DIR="$RUNNER_TEMP/zip-verify"
+          rm -rf "$UNZIP_DIR" && mkdir -p "$UNZIP_DIR"
+          ditto -x -k "dist/${{ steps.version.outputs.zip }}" "$UNZIP_DIR"
+          codesign --verify --deep --strict --verbose=2 "$UNZIP_DIR/豆包随时说.app"
+          xcrun stapler validate "$UNZIP_DIR/豆包随时说.app"
+          spctl --assess --type execute --verbose=4 "$UNZIP_DIR/豆包随时说.app"
+          # ditto 打包时跟随了符号链接的话，框架签名会在这一步露馅。
+          test -L "$UNZIP_DIR/豆包随时说.app/Contents/Frameworks/Sparkle.framework/Sparkle"
+
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.version.outputs.dmg }}
-          path: dist/${{ steps.version.outputs.dmg }}
+          path: |
+            dist/${{ steps.version.outputs.dmg }}
+            dist/${{ steps.version.outputs.zip }}
           if-no-files-found: error
 
       - name: 创建 GitHub Release
@@ -213,7 +251,49 @@ jobs:
           gh release create "${{ steps.version.outputs.tag }}" \
             --title "豆包随时说 ${{ steps.version.outputs.version }}" \
             --generate-notes \
-            "dist/${{ steps.version.outputs.dmg }}"
+            "dist/${{ steps.version.outputs.dmg }}" \
+            "dist/${{ steps.version.outputs.zip }}"
+
+      - name: 更新 appcast 并推回 main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::缺少 secret SPARKLE_PRIVATE_KEY，跑一次 ./setup-ci-secrets.sh --sparkle-only"
+            exit 1
+          fi
+
+          TAG="${{ steps.version.outputs.tag }}"
+          ZIP="${{ steps.version.outputs.zip }}"
+
+          # tag 触发时 checkout 的是 detached HEAD，得先切回 main 才能提交。
+          # 直接以 origin/main 为基准，checkout 的浅克隆没有完整历史，rebase 会失败。
+          git fetch origin main
+          git checkout -B main origin/main
+
+          gh release view "$TAG" --json body -q .body > "$RUNNER_TEMP/notes.md"
+
+          ./tools/update-appcast.sh \
+            --app "dist/豆包随时说.app" \
+            --zip "dist/$ZIP" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ZIP}" \
+            --link "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+          if git diff --quiet -- appcast.xml; then
+            echo "appcast 没有变化，跳过提交"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "chore: appcast 更新到 ${{ steps.version.outputs.version }}"
+          # 本 workflow 只监听 tag，推 main 不会触发它自己，没有循环风险。
+          git push origin main
 
       - name: 清理凭证
         if: always()

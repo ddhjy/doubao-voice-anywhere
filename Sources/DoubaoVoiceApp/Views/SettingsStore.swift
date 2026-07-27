@@ -40,6 +40,16 @@ final class SettingsStore: ObservableObject {
         case voice, cycle
     }
 
+    /// 自动更新的桥接入口。`UpdateController` 是 `@MainActor` 类型，本类不做并发标注，
+    /// 所以沿用注入闭包的路子对接，和 `restartEventTap` 一致。
+    struct UpdateBridge {
+        /// 开发版没有更新源，整段设置项隐藏。
+        var isEnabled = false
+        var automaticChecksEnabled: () -> Bool = { false }
+        var setAutomaticChecksEnabled: (Bool) -> Void = { _ in }
+        var checkNow: () -> Void = {}
+    }
+
     // MARK: - 派生状态
     //
     // 枚举输入源要走 Carbon、读自启动状态要摸磁盘，都不适合每次 body 求值时重算，
@@ -68,6 +78,9 @@ final class SettingsStore: ObservableObject {
     /// 录制快捷键期间暂停 event tap 的拦截，同样由 AppDelegate 注入。
     private let setHotkeyCaptureActive: (Bool) -> Void
 
+    /// 自动更新入口，同上。
+    private let updateBridge: UpdateBridge
+
     private let captureSession = HotkeyCaptureSession()
 
     /// NSOpenPanel 需要一个宿主窗口才能以 sheet 形式弹出。
@@ -78,9 +91,14 @@ final class SettingsStore: ObservableObject {
     private var permissionTimer: Timer?
     private var refreshScheduled = false
 
-    init(restartEventTap: @escaping () -> Void, setHotkeyCaptureActive: @escaping (Bool) -> Void) {
+    init(
+        restartEventTap: @escaping () -> Void,
+        setHotkeyCaptureActive: @escaping (Bool) -> Void,
+        updateBridge: UpdateBridge
+    ) {
         self.restartEventTap = restartEventTap
         self.setHotkeyCaptureActive = setHotkeyCaptureActive
+        self.updateBridge = updateBridge
 
         let center = NotificationCenter.default
         observers = [
@@ -93,6 +111,13 @@ final class SettingsStore: ObservableObject {
             },
             center.addObserver(
                 forName: InputSourceActivationNudgeSettings.changedNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.scheduleRefresh()
+            },
+            center.addObserver(
+                forName: UpdateController.changedNotification,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
@@ -311,6 +336,24 @@ final class SettingsStore: ObservableObject {
             get: { [weak self] in self?.launchAtLoginEnabled ?? false },
             set: { [weak self] in self?.setLaunchAtLogin($0) }
         )
+    }
+
+    // MARK: - 自动更新
+
+    /// 开发版没有更新源，整段设置项不显示。
+    var updatesEnabled: Bool { updateBridge.isEnabled }
+
+    var appVersion: String { UpdateController.currentDisplayVersion }
+
+    var automaticUpdateChecks: Binding<Bool> {
+        Binding(
+            get: { [updateBridge] in updateBridge.automaticChecksEnabled() },
+            set: { [updateBridge] in updateBridge.setAutomaticChecksEnabled($0) }
+        )
+    }
+
+    func checkForUpdates() {
+        updateBridge.checkNow()
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

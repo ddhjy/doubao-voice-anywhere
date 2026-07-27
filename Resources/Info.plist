@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- 让 Sparkle.framework 自带的 zh_CN 本地化能生效。本 bundle 里没有任何
+         .lproj，不加这个键 CoreFoundation 会把框架语言锁死成开发区域，
+         更新窗口会整个变成英文。 -->
+    <key>CFBundleAllowMixedLocalizations</key>
+    <true/>
     <key>CFBundleDevelopmentRegion</key>
     <string>zh_CN</string>
     <key>CFBundleDisplayName</key>
@@ -34,5 +39,24 @@
     <string>NSApplication</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+
+    <!-- 自动更新（Sparkle）。SUFeedURL 与 SUPublicEDKey 是一对：更新包由
+         对应的 EdDSA 私钥签名（GitHub Secret SPARKLE_PRIVATE_KEY），客户端
+         用这里的公钥验签，签不上就不会安装。
+         开发版没有更新一说，build.sh --dev 会把这两个键删掉。 -->
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/ddhjy/doubao-voice-anywhere/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>1Tiq0ry2CkWUK7kxgnJFNYriP1iJAuyXf6krO1uRWoE=</string>
+    <!-- 默认开着自动检查，省掉 Sparkle 第二次启动时那个「要不要自动检查更新」的询问框。 -->
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <!-- 每天一次。Sparkle 内部下限是 1 小时，写更小的值无效。 -->
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+    <!-- 不提供「后台静默下载并安装」选项：更新会重启 App、打断正在进行的语音输入，
+         一律等用户在提示框里点确认。 -->
+    <key>SUAllowsAutomaticUpdates</key>
+    <false/>
 </dict>
 </plist>

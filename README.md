@@ -35,7 +35,7 @@
 
 ## 安装
 
-[Releases](https://github.com/ddhjy/doubao-voice-anywhere/releases) 里有签名并经过 Apple 公证的 DMG（Intel / Apple Silicon 通用），下载后打开、把 App 拖进 Applications 就能用。
+[Releases](https://github.com/ddhjy/doubao-voice-anywhere/releases) 里有签名并经过 Apple 公证的 DMG（Intel / Apple Silicon 通用），下载后打开、把 App 拖进 Applications 就能用。装好之后会自己检查更新，见[自动更新](#自动更新)。
 
 想自己编译：
 
@@ -118,8 +118,17 @@ swift tools/check_switch.swift com.apple.keylayout.ABC  # 测试切换到指定�
 | 开始 / 结束豆包语音 | 等同于按说话快捷键，没法按键时手动触发 |
 | 切到豆包输入法 | 仅切输入源、不触发语音 |
 | 切回上一个输入法 | 恢复被切到豆包之前的输入源 |
-| 设置… | 两个快捷键、自启动、语音时暂停媒体、权限状态、日常输入法、应用兼容性 |
+| 设置… | 两个快捷键、自启动、语音时暂停媒体、权限状态、日常输入法、应用兼容性、自动更新 |
 | 在 Finder 中显示日志 | 打开 `~/Library/Logs/DoubaoVoiceApp/app.log` |
+| 检查更新… | 立刻查一次有没有新版本（开发版不显示这一项） |
+
+## 自动更新
+
+用 [Sparkle](https://sparkle-project.org) 做的：启动时和之后每天各在后台查一次，发现新版本弹窗给出更新说明，**你点了确认才会下载安装**，装完自动重启。不想要就去「设置…」→「通用」→「更新」关掉自动检查，需要时再手动点「现在检查…」。
+
+更新包由本项目的 EdDSA 私钥签名，客户端拿内置公钥验签，签不上不会安装；下载下来的仍是经 Apple 公证的同一个包，所以更新后辅助功能授权不会丢，不用重新授权。
+
+> v1.0.3 及更早的版本还没有这个能力，收不到更新提示。从 Releases 手动装一次新版本之后，后续升级就自动了。
 
 ## 常见问题
 
@@ -197,13 +206,15 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 ├── package-dmg.sh                      # 把 .app 打成可分发 DMG
 ├── notarize.sh                         # 提交 Apple 公证并等结果
 ├── codesign-lib.sh                     # 签名身份解析，被上面几个脚本 source
-├── setup-ci-secrets.sh                 # 一次性配好 CI 的签名 / 公证 secrets
+├── setup-ci-secrets.sh                 # 一次性配好 CI 的签名 / 公证 / 更新签名 secrets
+├── appcast.xml                         # Sparkle 更新源，由 CI 维护，别手改
 ├── .github/workflows/
 │   ├── ci.yml                          # push / PR：编译 + 打包验证（ad-hoc 签名）
-│   └── release.yml                     # 打 tag：签名 + 公证 + 发 Release
+│   └── release.yml                     # 打 tag：签名 + 公证 + 发 Release + 更新 appcast
 ├── assets/                             # README 图片
 ├── Resources/Info.plist                # bundle Info.plist 模板（含 ${...} 占位符）
 ├── tools/check_switch.swift            # 输入源诊断脚本
+├── tools/update-appcast.sh             # 给更新包签名并往 appcast.xml 追加条目
 ├── Helper/MediaRemoteBridge/           # 媒体暂停 helper（perl 宿主 + MediaRemote 桥接 dylib 源码）
 │   ├── mrbridge.m                      # status / pause / play，编译进 Resources/mrbridge.dylib
 │   └── mrbridge-host.pl                # 在 Apple 签名的 perl 进程内加载 dylib
@@ -226,7 +237,8 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
     │   ├── InputSourceActivationNudge.swift          # 输入上下文刷新
     │   ├── InputSourceActivationNudgeSettings.swift  # 应用兼容性白名单
     │   ├── LoginItemManager.swift      # 登录时自动启动
-    │   └── PermissionManager.swift     # 辅助功能权限
+    │   ├── PermissionManager.swift     # 辅助功能权限
+    │   └── UpdateController.swift      # 自动更新（Sparkle）
     ├── Utilities/
     │   └── Logger.swift                # stderr + 文件日志
     └── Views/                           # 设置界面（SwiftUI）
@@ -238,9 +250,11 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 
 ## 发布流程
 
-推一个 `v` 开头的 tag 就会触发 [release workflow](.github/workflows/release.yml)：universal 编译 → Developer ID 签名 → 送 Apple 公证 → 把票据装订进 `.app` 和 DMG → 建 GitHub Release 并挂上 DMG。装订过票据的包在离线环境下也能通过 Gatekeeper，用户双击即可打开，不用右键绕过。
+推一个 `v` 开头的 tag 就会触发 [release workflow](.github/workflows/release.yml)：universal 编译 → Developer ID 签名 → 送 Apple 公证 → 把票据装订进 `.app` 和 DMG → 建 GitHub Release 并挂上 DMG 和更新用 zip → 给 zip 算 EdDSA 签名、往 `appcast.xml` 追加条目并推回 `main`。装订过票据的包在离线环境下也能通过 Gatekeeper，用户双击即可打开，不用右键绕过。
 
-第一次要配一遍凭证，脚本会引导你导出证书、填 App Store Connect API Key：
+DMG 给首次下载的用户，zip 给 Sparkle 自动更新——同一个 `.app`，只是打包格式不同。`appcast.xml` 入库放在 `main` 上，App 里的 `SUFeedURL` 指的就是它的 raw 地址，所以这个文件的路径和分支不能随便挪，挪了老版本就再也收不到更新。
+
+第一次要配一遍凭证，脚本会引导你导出证书、填 App Store Connect API Key、把 Sparkle 签名私钥写进 secret：
 
 ```bash
 ./setup-ci-secrets.sh
@@ -253,7 +267,7 @@ git tag v1.2.0 && git push origin v1.2.0
 gh run watch    # 公证一般 1-5 分钟
 ```
 
-用到的 6 个 secrets：
+用到的 7 个 secrets：
 
 | Secret | 内容 |
 | --- | --- |
@@ -263,6 +277,9 @@ gh run watch    # 公证一般 1-5 分钟
 | `APPLE_API_KEY_P8` | App Store Connect API Key 的 .p8，base64 |
 | `APPLE_API_KEY_ID` | Key ID，10 位 |
 | `APPLE_API_ISSUER_ID` | Issuer ID，UUID |
+| `SPARKLE_PRIVATE_KEY` | Sparkle 更新签名的 EdDSA 私钥，`generate_keys -x` 导出 |
+
+`SPARKLE_PRIVATE_KEY` 和 `Resources/Info.plist` 里的 `SUPublicEDKey` 是一对，换了一个就得同步换另一个，否则用户端验签不过、收不到更新（`./setup-ci-secrets.sh --sparkle-only` 会替你核对这一点）。私钥存在本机钥匙串里，换机器时用 `generate_keys -x` / `-f` 导出导入。
 
 同一套脚本在本地也能手动跑完整流程：
 

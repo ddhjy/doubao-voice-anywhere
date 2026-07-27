@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparkle 的更新源。App 内的 SUFeedURL 指向本文件在 main 分支上的 raw 地址：
+  https://raw.githubusercontent.com/ddhjy/doubao-voice-anywhere/main/appcast.xml
+
+  别手改：发版时由 release workflow 调 tools/update-appcast.sh 追加条目再推回 main。
+  每个 enclosure 的 sparkle:edSignature 都由 EdDSA 私钥签出，客户端拿
+  Info.plist 里的 SUPublicEDKey 验签，对不上就不会安装。
+-->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>豆包随时说</title>
+    <link>https://github.com/ddhjy/doubao-voice-anywhere</link>
+    <description>豆包随时说的版本更新</description>
+    <language>zh-CN</language>
+    <!-- NEW_ITEM_ANCHOR：新条目插在这一行下面，tools/update-appcast.sh 靠它定位，别删。 -->
+  </channel>
+</rss>

@@ -20,13 +20,16 @@ final class PreferencesWindowController: NSWindowController, NSWindowDelegate {
     /// - Parameters:
     ///   - restartEventTap: 「重新连接键盘监听」的实现，由 AppDelegate 注入。
     ///   - setHotkeyCaptureActive: 录制快捷键期间暂停 event tap 拦截，同上。
+    ///   - updateBridge: 自动更新的开关与「现在检查」，同上。
     init(
         restartEventTap: @escaping () -> Void,
-        setHotkeyCaptureActive: @escaping (Bool) -> Void
+        setHotkeyCaptureActive: @escaping (Bool) -> Void,
+        updateBridge: SettingsStore.UpdateBridge
     ) {
         store = SettingsStore(
             restartEventTap: restartEventTap,
-            setHotkeyCaptureActive: setHotkeyCaptureActive
+            setHotkeyCaptureActive: setHotkeyCaptureActive,
+            updateBridge: updateBridge
         )
 
         let tabController = NSTabViewController()

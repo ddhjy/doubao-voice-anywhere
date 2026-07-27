@@ -136,6 +136,29 @@ clang "${helper_arch_flags[@]}" -dynamiclib -fobjc-arc -O2 \
   "$HELPER_SRC_DIR/mrbridge.m"
 cp "$HELPER_SRC_DIR/mrbridge-host.pl" "$BUNDLE_PATH/Contents/Resources/"
 
+# ---- Sparkle 框架（自动更新）----
+#
+# SwiftPM 只负责把 xcframework 解出来，往 .app 里塞是我们自己的事。
+# 这份 artifact 是架构无关的（macos slice 本身就是 universal），
+# 不随 --arch 变化，逐架构编译 + lipo 的流程直接取它即可。
+SPARKLE_FRAMEWORK="$SCRIPT_DIR/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [[ ! -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "[错误] 找不到 Sparkle.framework：${SPARKLE_FRAMEWORK}（先跑一次 swift build 拉依赖）" >&2
+  exit 1
+fi
+
+info "嵌入 Sparkle.framework"
+mkdir -p "$BUNDLE_PATH/Contents/Frameworks"
+# 必须 ditto（或 cp -R，不能 cp -RL）：框架内部靠符号链接组织 Versions/，
+# 跟随符号链接复制出来的副本签名直接作废。
+ditto "$SPARKLE_FRAMEWORK" "$BUNDLE_PATH/Contents/Frameworks/Sparkle.framework"
+
+# 两个 XPC service 只有沙盒 App 才用得上（要配合 SUEnableInstallerLauncherService /
+# SUEnableDownloaderService，本 App 两个都没开），删掉省 400 多 KB。
+# 官方文档「Removing XPC Services」写明支持这么做。
+rm -rf "$BUNDLE_PATH/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+rm -f "$BUNDLE_PATH/Contents/Frameworks/Sparkle.framework/XPCServices"
+
 # ---- App 图标 ----
 #
 # AppIcon.icns（macOS 13–15）与 Assets.car（macOS 26+ 满版图标）都是入库产物；
@@ -143,7 +166,7 @@ cp "$HELPER_SRC_DIR/mrbridge-host.pl" "$BUNDLE_PATH/Contents/Resources/"
 # 重新生成（编 Assets.car 需要 Xcode 26 的 actool）。CI 只负责拷贝。
 for icon_artifact in "AppIcon.icns" "Assets.car"; do
   if [[ ! -f "$SCRIPT_DIR/Resources/$icon_artifact" ]]; then
-    echo "[错误] 找不到图标产物：Resources/$icon_artifact（用 swift tools/GenerateAppIcon.swift 生成）" >&2
+    echo "[错误] 找不到图标产物：Resources/${icon_artifact}（用 swift tools/GenerateAppIcon.swift 生成）" >&2
     exit 1
   fi
   cp "$SCRIPT_DIR/Resources/$icon_artifact" "$BUNDLE_PATH/Contents/Resources/"
@@ -167,10 +190,19 @@ sed \
   -e "s|\${BUNDLE_VERSION}|$BUILD_NUMBER|g" \
   "$INFO_PLIST_TEMPLATE" > "$BUNDLE_PATH/Contents/Info.plist"
 
+# 开发版不参与自动更新：它的 bundle ID 是 .dev，装的却是正式版的更新包，
+# 一更新 Dev.app 就被正式版顶掉了。去掉 feed，UpdateController 会整个惰性关掉。
+if [[ "$DEV_BUILD" -eq 1 ]]; then
+  for key in SUFeedURL SUPublicEDKey SUEnableAutomaticChecks SUScheduledCheckInterval SUAllowsAutomaticUpdates; do
+    /usr/libexec/PlistBuddy -c "Delete :$key" "$BUNDLE_PATH/Contents/Info.plist" >/dev/null 2>&1 || true
+  done
+  info "开发版：已移除自动更新配置"
+fi
+
 # ---- 签名 ----
 #
 # 不用 --deep：Apple 明确说它不适合分发签名，且会把外层的 options 原样套给
-# 嵌套代码。嵌套代码（mrbridge.dylib）必须先签，再签外层 bundle。
+# 嵌套代码。嵌套代码必须自内向外逐个签完，才轮到外层 bundle。
 sign_args=(--force --sign "$CODE_SIGN_IDENTITY")
 
 if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
@@ -178,6 +210,10 @@ if [[ "$CODE_SIGN_IDENTITY" == "-" ]]; then
   info "提示：ad-hoc 签名下，每次重新编译安装后需要在「系统设置 → 隐私与安全性 → 辅助功能」里重新授权一次；想避免这一步，见 README「常见问题」中的自签证书方法"
 else
   # 公证要求 Hardened Runtime，ad-hoc 签名不支持。
+  #
+  # 这个 if 分支不能去掉：Hardened Runtime 含 Library Validation，要求
+  # Sparkle.framework 与主程序 Team ID 一致，而 ad-hoc 签名根本没有 Team ID，
+  # 一旦给 ad-hoc 包加上 --options runtime，dyld 会拒绝加载框架，App 直接起不来。
   sign_args+=(--options runtime)
 
   # 安全时间戳同样是公证的硬性要求，但要联网访问 Apple 时间戳服务器：
@@ -189,6 +225,10 @@ else
   info "codesign --sign \"$CODE_SIGN_IDENTITY\"（Hardened Runtime）"
 fi
 
+SPARKLE_BUNDLED="$BUNDLE_PATH/Contents/Frameworks/Sparkle.framework"
+codesign "${sign_args[@]}" "$SPARKLE_BUNDLED/Versions/B/Autoupdate" >/dev/null
+codesign "${sign_args[@]}" "$SPARKLE_BUNDLED/Versions/B/Updater.app" >/dev/null
+codesign "${sign_args[@]}" "$SPARKLE_BUNDLED" >/dev/null
 codesign "${sign_args[@]}" "$BUNDLE_PATH/Contents/Resources/mrbridge.dylib" >/dev/null
 codesign "${sign_args[@]}" "$BUNDLE_PATH" >/dev/null
 

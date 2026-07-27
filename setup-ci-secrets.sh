@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# 把 Developer ID 证书和公证凭证写进 GitHub Actions Secrets，供 release.yml 用。
+# 把 Developer ID 证书、公证凭证和 Sparkle 更新签名私钥写进 GitHub Actions
+# Secrets，供 release.yml 用。
 #
 # 用法：
-#   ./setup-ci-secrets.sh                # 证书 + 公证凭证都配
-#   ./setup-ci-secrets.sh --cert-only    # 只配签名证书
-#   ./setup-ci-secrets.sh --notary-only  # 只配公证凭证
+#   ./setup-ci-secrets.sh                 # 三样都配
+#   ./setup-ci-secrets.sh --cert-only     # 只配签名证书
+#   ./setup-ci-secrets.sh --notary-only   # 只配公证凭证
+#   ./setup-ci-secrets.sh --sparkle-only  # 只配 Sparkle 更新签名私钥
 #
 # 密钥一律走管道交给 gh，不落仓库、不经过命令行参数（免得出现在 ps 输出里）。
 #
@@ -17,13 +19,15 @@ cd "$SCRIPT_DIR"
 
 DO_CERT=1
 DO_NOTARY=1
+DO_SPARKLE=1
 
 for arg in "$@"; do
   case "$arg" in
-    --cert-only)   DO_NOTARY=0 ;;
-    --notary-only) DO_CERT=0 ;;
+    --cert-only)    DO_NOTARY=0; DO_SPARKLE=0 ;;
+    --notary-only)  DO_CERT=0; DO_SPARKLE=0 ;;
+    --sparkle-only) DO_CERT=0; DO_NOTARY=0 ;;
     --help|-h)
-      sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "[错误] 未知参数：$arg" >&2; exit 1 ;;
@@ -98,7 +102,7 @@ fi
 # ---- 一、签名证书 ----
 
 if [[ "$DO_CERT" -eq 1 ]]; then
-  step "1/2 Developer ID 签名证书"
+  step "1/3 Developer ID 签名证书"
 
   DEFAULT_IDENTITY=""
   if [[ -f "$SCRIPT_DIR/.codesign-identity" ]]; then
@@ -233,7 +237,7 @@ fi
 # ---- 二、公证凭证 ----
 
 if [[ "$DO_NOTARY" -eq 1 ]]; then
-  step "2/2 公证凭证（App Store Connect API Key）"
+  step "2/3 公证凭证（App Store Connect API Key）"
 
   cat <<'GUIDE'
 
@@ -284,6 +288,67 @@ GUIDE
   base64 < "$P8_INPUT" | tr -d '\n' | set_secret APPLE_API_KEY_P8
   printf '%s' "$API_KEY_ID" | set_secret APPLE_API_KEY_ID
   printf '%s' "$API_ISSUER_ID" | set_secret APPLE_API_ISSUER_ID
+fi
+
+# ---- 三、Sparkle 更新签名私钥 ----
+#
+# 自动更新靠这把 EdDSA 私钥给更新包签名，公钥（SUPublicEDKey）写死在
+# Resources/Info.plist 里。两者必须配对：换了私钥就得同步换公钥，
+# 否则老用户校验不过、收不到更新。
+
+if [[ "$DO_SPARKLE" -eq 1 ]]; then
+  step "3/3 Sparkle 更新签名私钥"
+
+  SPARKLE_BIN="$SCRIPT_DIR/.build/artifacts/sparkle/Sparkle/bin"
+  if [[ ! -x "$SPARKLE_BIN/generate_keys" ]]; then
+    info "Sparkle 工具还没下载，执行 swift build 拉一次依赖"
+    swift build > /dev/null
+  fi
+  if [[ ! -x "$SPARKLE_BIN/generate_keys" ]]; then
+    error "找不到 generate_keys：$SPARKLE_BIN"
+    exit 1
+  fi
+
+  # 一把私钥可以服务多个 App（Sparkle 官方建议），钥匙串里已有就直接复用，
+  # 不带参数跑 generate_keys 也只会沿用已有的、不会覆盖。
+  if PUBLIC_KEY="$("$SPARKLE_BIN/generate_keys" -p 2> /dev/null)" && [[ -n "$PUBLIC_KEY" ]]; then
+    info "复用钥匙串里已有的签名密钥"
+  else
+    info "钥匙串里还没有签名密钥，现在生成一把"
+    "$SPARKLE_BIN/generate_keys"
+    PUBLIC_KEY="$("$SPARKLE_BIN/generate_keys" -p)"
+  fi
+
+  # 核对公钥和 Info.plist 里写死的那个是否一致，不一致就是要么改错了、
+  # 要么在另一台机器上生成过新密钥。
+  PLIST_PUBLIC_KEY="$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" \
+    "$SCRIPT_DIR/Resources/Info.plist" 2> /dev/null || true)"
+
+  info "钥匙串里的公钥：$PUBLIC_KEY"
+  if [[ -z "$PLIST_PUBLIC_KEY" ]]; then
+    warn "Resources/Info.plist 里没有 SUPublicEDKey，请把上面这行公钥填进去"
+  elif [[ "$PLIST_PUBLIC_KEY" != "$PUBLIC_KEY" ]]; then
+    error "和 Resources/Info.plist 里的 SUPublicEDKey 对不上："
+    error "    Info.plist: $PLIST_PUBLIC_KEY"
+    error "    钥匙串:     $PUBLIC_KEY"
+    error "用错私钥签出来的更新包，用户端校验不过。确认该用哪一把再继续。"
+    exit 1
+  else
+    info "与 Resources/Info.plist 里的 SUPublicEDKey 一致"
+  fi
+
+  # -x 只能写文件，不能输出到 stdout；用临时文件中转，读完立刻删。
+  SPARKLE_TMP="$(mktemp -d)"
+  trap 'rm -rf "$SPARKLE_TMP"' EXIT
+  SPARKLE_KEY_FILE="$SPARKLE_TMP/sparkle_private_key"
+
+  if ! "$SPARKLE_BIN/generate_keys" -x "$SPARKLE_KEY_FILE" > /dev/null; then
+    error "导出私钥失败（钥匙串弹窗要选「始终允许」）"
+    exit 1
+  fi
+
+  tr -d '\n' < "$SPARKLE_KEY_FILE" | set_secret SPARKLE_PRIVATE_KEY
+  rm -f "$SPARKLE_KEY_FILE"
 fi
 
 # ---- 收尾 ----
