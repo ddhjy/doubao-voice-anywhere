@@ -59,6 +59,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var englishChoices: [InputSourceChoice] = []
     @Published private(set) var inputSourceWarnings: [String] = []
     @Published private(set) var compatibilityApps: [CompatibilityApp] = []
+    @Published private(set) var availableCompatibilityPresets: [InputSourceActivationNudgeSettings.Preset] = []
     @Published private(set) var launchAtLoginEnabled = false
     @Published private(set) var accessibilityTrusted = false
 
@@ -165,11 +166,15 @@ final class SettingsStore: ObservableObject {
         cycleHotkeyWarning = Self.typingKeyWarning(for: cycleHotkey)
         cycleSwitchEnabled = GeneralSettings.ctrlSpaceSwitchEnabled
 
-        compatibilityApps = InputSourceActivationNudgeSettings.bundleIDs.sorted().map {
+        let compatibilityBundleIDs = InputSourceActivationNudgeSettings.bundleIDs
+        compatibilityApps = compatibilityBundleIDs.sorted().map {
             CompatibilityApp(
                 id: $0,
                 displayName: InputSourceActivationNudgeSettings.applicationName(for: $0)
             )
+        }
+        availableCompatibilityPresets = InputSourceActivationNudgeSettings.presets.filter {
+            !compatibilityBundleIDs.contains($0.bundleID)
         }
         compatibilitySelection.formIntersection(compatibilityApps.map(\.id))
 
@@ -454,6 +459,11 @@ final class SettingsStore: ObservableObject {
         }
 
         InputSourceActivationNudgeSettings.add(bundleID: normalized)
+        refresh()
+    }
+
+    func addCompatibilityPreset(_ preset: InputSourceActivationNudgeSettings.Preset) {
+        InputSourceActivationNudgeSettings.add(bundleID: preset.bundleID)
         refresh()
     }
 

@@ -29,6 +29,16 @@ struct AppCompatibilityPane: View {
 
                 HStack(spacing: 6) {
                     Menu {
+                        if !store.availableCompatibilityPresets.isEmpty {
+                            Section("预设") {
+                                ForEach(store.availableCompatibilityPresets) { preset in
+                                    Button("\(preset.name)（\(preset.bundleID)）") {
+                                        store.addCompatibilityPreset(preset)
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
                         Button("选择应用…") { store.presentApplicationPicker() }
                         Button("输入 Bundle ID…") { isPromptingBundleID = true }
                     } label: {

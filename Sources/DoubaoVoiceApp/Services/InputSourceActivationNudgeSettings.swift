@@ -2,21 +2,44 @@ import AppKit
 import Foundation
 
 enum InputSourceActivationNudgeSettings {
+    struct Preset: Identifiable, Hashable {
+        let name: String
+        let bundleID: String
+
+        var id: String { bundleID }
+    }
+
     static let changedNotification = Notification.Name("InputSourceActivationNudgeSettings.changed")
 
+    static let presets = [
+        Preset(name: "Mira", bundleID: "net.byteintl.mira"),
+        Preset(name: "Notion", bundleID: "notion.id"),
+    ]
+
     private static let bundleIDsKey = "InputSourceActivationNudgeBundleIDs"
-    private static let seededDefaultsKey = "InputSourceActivationNudgeSeededDefaults_v1"
+    private static let seededPresetBundleIDsKey = "InputSourceActivationNudgeSeededPresetBundleIDs_v2"
+    private static let legacySeededDefaultsKey = "InputSourceActivationNudgeSeededDefaults_v1"
 
     /// Electron 类应用切完输入法后文本上下文经常滞后，把已确认受影响的应用
-    /// 一次性补进白名单（用户仍可在设置界面移除，之后不会再自动加回来）。
+    /// 各补进白名单一次。记录的是已经补过的具体预设，用户移除后不会在下次启动
+    /// 时被自动加回来；以后新增预设也可以只迁移新增的那一项。
     static func seedDefaultBundleIDsIfNeeded() {
         let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: seededDefaultsKey) else { return }
-        defaults.set(true, forKey: seededDefaultsKey)
+        var seededBundleIDs = Set(defaults.stringArray(forKey: seededPresetBundleIDsKey) ?? [])
 
-        for bundleID in ["notion.id"] where !bundleIDs.contains(bundleID) {
-            add(bundleID: bundleID)
+        // v1 只预置过 Notion。把这段历史迁进按项记录，避免曾经主动删除 Notion
+        // 的老用户升级后又被自动加回来。
+        if defaults.bool(forKey: legacySeededDefaultsKey) {
+            seededBundleIDs.insert("notion.id")
         }
+
+        let presetBundleIDs = Set(presets.map(\.bundleID))
+        let newBundleIDs = presetBundleIDs.subtracting(seededBundleIDs)
+        guard !newBundleIDs.isEmpty else { return }
+
+        bundleIDs.formUnion(newBundleIDs)
+        seededBundleIDs.formUnion(presetBundleIDs)
+        defaults.set(Array(seededBundleIDs).sorted(), forKey: seededPresetBundleIDsKey)
     }
 
     static var bundleIDs: Set<String> {
