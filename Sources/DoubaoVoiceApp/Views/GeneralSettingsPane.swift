@@ -67,14 +67,14 @@ struct GeneralSettingsPane: View {
                         Text(store.appVersion)
                             .foregroundStyle(.secondary)
                     }
-                    Toggle("自动检查更新", isOn: store.automaticUpdateChecks)
+                    Toggle("自动更新到最新版", isOn: store.automaticUpdates)
                     Button("现在检查…") {
                         store.checkForUpdates()
                     }
                 } header: {
                     Text("更新")
                 } footer: {
-                    Text("每天在后台查一次，有新版本会弹窗询问，确认后才下载安装。安装完成会自动重启。")
+                    Text("每天在后台查一次，发现新版本会自动下载并安装，装完自动重启。正在说话时会等说完再装。关掉后仍可点「现在检查…」手动更新。")
                 }
             }
         }

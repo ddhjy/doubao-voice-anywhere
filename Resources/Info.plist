@@ -54,9 +54,11 @@
     <!-- 每天一次。Sparkle 内部下限是 1 小时，写更小的值无效。 -->
     <key>SUScheduledCheckInterval</key>
     <integer>86400</integer>
-    <!-- 不提供「后台静默下载并安装」选项：更新会重启 App、打断正在进行的语音输入，
-         一律等用户在提示框里点确认。 -->
+    <!-- 允许后台静默下载并安装。设置里的「自动更新到最新版」同时驱动检查和下载；
+         正在说话时 UpdateController 会把安装推迟到说完。 -->
     <key>SUAllowsAutomaticUpdates</key>
-    <false/>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 </dict>
 </plist>

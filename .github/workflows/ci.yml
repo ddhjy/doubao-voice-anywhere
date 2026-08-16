@@ -22,7 +22,7 @@ jobs:
       # 证书自动探测 → ad-hoc 签名回退路径。
       #
       # 用 --universal 是有意的：release.yml 出的就是双架构包，
-      # 这条路径只在打 tag 时跑一次太晚，放这里每次 push 都过一遍。
+      # 这条路径只在发版时跑一次太晚，放这里每次 push 都过一遍。
       - name: Assemble .app bundle
         run: ./build.sh --universal
 
@@ -36,8 +36,8 @@ jobs:
           codesign --verify --deep --strict "dist/豆包随时说.app"
           plutil -lint "dist/豆包随时说.app/Contents/Info.plist"
 
-      # DMG 打包在这里先冒烟一遍：release.yml 由 tag 触发，等到那时候才发现
-      # 打包脚本坏了，只能删 tag 重来。
+      # DMG 打包在这里先冒烟一遍：release.yml 跑公证更贵，等到那时候才发现
+      # 打包脚本坏了再修，等于白烧一轮签名和公证。
       - name: Package DMG (smoke test)
         run: |
           APP_VERSION=0.0.0-ci ./package-dmg.sh

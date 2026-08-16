@@ -8,20 +8,29 @@ import Sparkle
 /// 这里读不到 feed 就整个不实例化 updater，菜单和设置里的更新入口也一并隐藏
 /// ——否则 Dev.app 一更新就会被正式版覆盖掉。
 ///
+/// 设置里的「自动更新到最新版」同时打开定时检查和后台下载。下载完成后
+/// Sparkle 默认等到退出再装；这里在没说话时立刻安装重启，说话时等会话结束。
+///
 /// 只在主线程使用：Sparkle 的 `SPUStandardUpdaterController` 要求如此，
 /// 它的回调也一律在主线程发出。
 final class UpdateController: NSObject {
 
-    /// 自动检查开关变化时发出，设置界面据此刷新。
+    /// 自动更新开关变化时发出，设置界面据此刷新。
     static let changedNotification = Notification.Name("UpdateController.changed")
 
     /// Info.plist 里配了 feed 才启用。为 false 时下面所有方法都是空操作。
     let isEnabled: Bool
 
+    /// 语音进行中为 true。由 AppDelegate 注入，默认当作空闲。
+    var isAppBusy: () -> Bool = { false }
+
     private var updaterController: SPUStandardUpdaterController?
 
     /// 更新会话期间临时切到 `.regular` 之前的激活策略，会话结束后还原。
     private var activationPolicyBeforeSession: NSApplication.ActivationPolicy?
+
+    private var pendingSilentInstall: (() -> Void)?
+    private var idleObserver: NSObjectProtocol?
 
     override init() {
         let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
@@ -39,7 +48,28 @@ final class UpdateController: NSObject {
             updaterDelegate: self,
             userDriverDelegate: self
         )
+
+        // 老版本开关只控制「自动检查」。升级后同一开关表示检查 + 下载安装。
+        if let updater = updaterController?.updater,
+           updater.automaticallyChecksForUpdates != updater.automaticallyDownloadsUpdates {
+            updater.automaticallyDownloadsUpdates = updater.automaticallyChecksForUpdates
+        }
+
+        idleObserver = NotificationCenter.default.addObserver(
+            forName: DoubaoVoiceController.didBecomeIdleNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.installPendingUpdateIfIdle()
+        }
+
         Logger.shared.info("自动更新已启动，更新源: \(feedURL ?? "")")
+    }
+
+    deinit {
+        if let idleObserver {
+            NotificationCenter.default.removeObserver(idleObserver)
+        }
     }
 
     // MARK: - 对外接口
@@ -50,14 +80,17 @@ final class UpdateController: NSObject {
 
     var menuItemAction: Selector { #selector(SPUStandardUpdaterController.checkForUpdates(_:)) }
 
-    var automaticallyChecksForUpdates: Bool {
+    /// 设置里的「自动更新到最新版」：定时检查 + 后台下载安装，同一开关。
+    var automaticallyUpdates: Bool {
         get { updaterController?.updater.automaticallyChecksForUpdates ?? false }
         set {
-            guard let updater = updaterController?.updater,
-                  updater.automaticallyChecksForUpdates != newValue
-            else { return }
+            guard let updater = updaterController?.updater else { return }
+            let checksChanged = updater.automaticallyChecksForUpdates != newValue
+            let downloadsChanged = updater.automaticallyDownloadsUpdates != newValue
+            guard checksChanged || downloadsChanged else { return }
             updater.automaticallyChecksForUpdates = newValue
-            Logger.shared.info("自动检查更新已\(newValue ? "开启" : "关闭")")
+            updater.automaticallyDownloadsUpdates = newValue
+            Logger.shared.info("自动更新已\(newValue ? "开启" : "关闭")")
             NotificationCenter.default.post(name: Self.changedNotification, object: nil)
         }
     }
@@ -69,6 +102,14 @@ final class UpdateController: NSObject {
 
     var canCheckForUpdates: Bool {
         updaterController?.updater.canCheckForUpdates ?? false
+    }
+
+    private func installPendingUpdateIfIdle() {
+        guard let install = pendingSilentInstall else { return }
+        guard !isAppBusy() else { return }
+        pendingSilentInstall = nil
+        Logger.shared.info("语音已结束，开始安装已下载的更新")
+        install()
     }
 }
 
@@ -86,6 +127,24 @@ extension UpdateController: SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
         Logger.shared.info("开始安装新版本: \(item.displayVersionString)")
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        willInstallUpdateOnQuit item: SUAppcastItem,
+        immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+    ) -> Bool {
+        if isAppBusy() {
+            Logger.shared.info("已下载 \(item.displayVersionString)，语音进行中，说完再安装")
+            pendingSilentInstall = immediateInstallHandler
+            return true
+        }
+
+        Logger.shared.info("已下载 \(item.displayVersionString)，开始自动安装")
+        DispatchQueue.main.async {
+            immediateInstallHandler()
+        }
+        return true
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: any Error) {

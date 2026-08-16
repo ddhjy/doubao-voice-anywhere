@@ -19,17 +19,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         },
         updateBridge: SettingsStore.UpdateBridge(
             isEnabled: updateController.isEnabled,
-            automaticChecksEnabled: { [updateController] in
-                updateController.automaticallyChecksForUpdates
+            automaticUpdatesEnabled: { [updateController] in
+                updateController.automaticallyUpdates
             },
-            setAutomaticChecksEnabled: { [updateController] enabled in
-                updateController.automaticallyChecksForUpdates = enabled
+            setAutomaticUpdatesEnabled: { [updateController] enabled in
+                updateController.automaticallyUpdates = enabled
             },
             checkNow: { [updateController] in updateController.checkForUpdates() }
         )
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updateController.isAppBusy = { [weak self] in
+            self?.voiceController.isBusyForAppUpdate ?? false
+        }
+
         Logger.shared.info("DoubaoVoiceApp 启动 (PID \(ProcessInfo.processInfo.processIdentifier))")
         if let path = Logger.shared.logFilePath {
             Logger.shared.info("日志文件: \(path)")

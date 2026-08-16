@@ -358,7 +358,7 @@ gh secret list
 
 cat <<'DONE'
 
-配置完成。发一个版本：
+配置完成。之后把应用代码推到 main 就会自动发版；需要指定版本时：
 
   git tag v1.0.0 && git push origin v1.0.0
 

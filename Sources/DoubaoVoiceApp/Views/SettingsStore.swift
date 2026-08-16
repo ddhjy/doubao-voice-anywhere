@@ -45,8 +45,8 @@ final class SettingsStore: ObservableObject {
     struct UpdateBridge {
         /// 开发版没有更新源，整段设置项隐藏。
         var isEnabled = false
-        var automaticChecksEnabled: () -> Bool = { false }
-        var setAutomaticChecksEnabled: (Bool) -> Void = { _ in }
+        var automaticUpdatesEnabled: () -> Bool = { false }
+        var setAutomaticUpdatesEnabled: (Bool) -> Void = { _ in }
         var checkNow: () -> Void = {}
     }
 
@@ -350,10 +350,10 @@ final class SettingsStore: ObservableObject {
 
     var appVersion: String { UpdateController.currentDisplayVersion }
 
-    var automaticUpdateChecks: Binding<Bool> {
+    var automaticUpdates: Binding<Bool> {
         Binding(
-            get: { [updateBridge] in updateBridge.automaticChecksEnabled() },
-            set: { [updateBridge] in updateBridge.setAutomaticChecksEnabled($0) }
+            get: { [updateBridge] in updateBridge.automaticUpdatesEnabled() },
+            set: { [updateBridge] in updateBridge.setAutomaticUpdatesEnabled($0) }
         )
     }
 

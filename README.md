@@ -124,7 +124,7 @@ swift tools/check_switch.swift com.apple.keylayout.ABC  # 测试切换到指定�
 
 ## 自动更新
 
-用 [Sparkle](https://sparkle-project.org) 做的：启动时和之后每天各在后台查一次，发现新版本弹窗给出更新说明，**你点了确认才会下载安装**，装完自动重启。不想要就去「设置…」→「通用」→「更新」关掉自动检查，需要时再手动点「现在检查…」。
+用 [Sparkle](https://sparkle-project.org) 做的：启动时和之后每天各在后台查一次，发现新版本会自动下载并安装，装完自动重启。正在说话时会等说完再装，避免打断录音。不想要就去「设置…」→「通用」→「更新」关掉「自动更新到最新版」，需要时再手动点「现在检查…」。
 
 更新包由本项目的 EdDSA 私钥签名，客户端拿内置公钥验签，签不上不会安装；下载下来的仍是经 Apple 公证的同一个包，所以更新后辅助功能授权不会丢，不用重新授权。
 
@@ -210,7 +210,7 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 ├── appcast.xml                         # Sparkle 更新源，由 CI 维护，别手改
 ├── .github/workflows/
 │   ├── ci.yml                          # push / PR：编译 + 打包验证（ad-hoc 签名）
-│   └── release.yml                     # 打 tag：签名 + 公证 + 发 Release + 更新 appcast
+│   └── release.yml                     # 推 main / 打 tag：签名 + 公证 + 发 Release + 更新 appcast
 ├── assets/                             # README 图片
 ├── Resources/Info.plist                # bundle Info.plist 模板（含 ${...} 占位符）
 ├── tools/check_switch.swift            # 输入源诊断脚本
@@ -250,7 +250,9 @@ CleanShot X 等录屏软件的按键可视化层对模拟修饰键事件的显�
 
 ## 发布流程
 
-推一个 `v` 开头的 tag 就会触发 [release workflow](.github/workflows/release.yml)：universal 编译 → Developer ID 签名 → 送 Apple 公证 → 把票据装订进 `.app` 和 DMG → 建 GitHub Release 并挂上 DMG 和更新用 zip → 给 zip 算 EdDSA 签名、往 `appcast.xml` 追加条目并推回 `main`。装订过票据的包在离线环境下也能通过 Gatekeeper，用户双击即可打开，不用右键绕过。
+把应用代码推到 `main` 就会触发 [release workflow](.github/workflows/release.yml)：相对最新的稳定版 tag 自动 patch +1（例如当前是 `v1.0.6` 就会出 `v1.0.7`），然后 universal 编译 → Developer ID 签名 → 送 Apple 公证 → 把票据装订进 `.app` 和 DMG → 建 GitHub Release 并挂上 DMG 和更新用 zip → 给 zip 算 EdDSA 签名、往 `appcast.xml` 追加条目并推回 `main`。只改文档 / `appcast.xml` / 工作流配置不会发版；appcast 回推靠提交说明跳过，不会循环出包。装订过票据的包在离线环境下也能通过 Gatekeeper，用户双击即可打开，不用右键绕过。
+
+需要发 minor / major，或重跑某个版本时，仍可手动推 `v*` tag，或在 Actions 里 `workflow_dispatch` 并填版本号。
 
 DMG 给首次下载的用户，zip 给 Sparkle 自动更新——同一个 `.app`，只是打包格式不同。`appcast.xml` 入库放在 `main` 上，App 里的 `SUFeedURL` 指的就是它的 raw 地址，所以这个文件的路径和分支不能随便挪，挪了老版本就再也收不到更新。
 
@@ -260,7 +262,7 @@ DMG 给首次下载的用户，zip 给 Sparkle 自动更新——同一个 `.app
 ./setup-ci-secrets.sh
 ```
 
-之后每次发版：
+之后日常发版：把改动推进 `main` 即可。需要指定版本时：
 
 ```bash
 git tag v1.2.0 && git push origin v1.2.0

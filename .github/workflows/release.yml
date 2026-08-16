@@ -1,45 +1,200 @@
 name: Release
 
-# 打 tag 出正式包：universal 编译 → Developer ID 签名 → 公证 → 装订票据 →
-# 传到 GitHub Release。需要的 secrets 见 README「发布流程」，
-# 可用 ./setup-ci-secrets.sh 一键配置。
+# 推到 main 且带应用代码变化时自动 patch 发版；手动推 v* tag 或
+# workflow_dispatch 仍可指定版本。GITHUB_TOKEN 推出去的 tag 不会再触发
+# 一次 workflow，所以算版本和出包必须在同一次 run 里做完。
+# 需要的 secrets 见 README「发布流程」，可用 ./setup-ci-secrets.sh 一键配置。
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（可选，形如 1.2.0；留空则自动 patch +1）'
+        required: false
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  decide:
+    name: 决定是否发版
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.decide.outputs.should_release }}
+      tag: ${{ steps.decide.outputs.tag }}
+      version: ${{ steps.decide.outputs.version }}
+      short_version: ${{ steps.decide.outputs.short_version }}
+      dmg: ${{ steps.decide.outputs.dmg }}
+      zip: ${{ steps.decide.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 拉取全部 tag
+        run: git fetch origin --tags --force
+
+      - name: 解析版本并按需打 tag
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          MANUAL_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          emit() {
+            local tag="$1"
+            local version="${tag#v}"
+            local short_version="${version%%-*}"
+
+            if ! [[ "$short_version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+              echo "::error::版本号格式不对：$tag（应形如 v1.2.3 或 v1.2.3-beta1）"
+              exit 1
+            fi
+
+            {
+              echo "should_release=true"
+              echo "tag=$tag"
+              echo "version=$version"
+              echo "short_version=$short_version"
+              echo "dmg=DoubaoVoiceApp-$version.dmg"
+              echo "zip=DoubaoVoiceApp-$version.zip"
+            } >> "$GITHUB_OUTPUT"
+
+            echo "将发布 $tag"
+          }
+
+          skip() {
+            echo "$1"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          }
+
+          bump_patch() {
+            local ver="${1#v}"
+            local major minor patch
+            IFS=. read -r major minor patch <<< "$ver"
+            major="${major:-0}"
+            minor="${minor:-0}"
+            patch="${patch:-0}"
+            echo "v${major}.${minor}.$((patch + 1))"
+          }
+
+          latest_stable() {
+            git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true
+          }
+
+          ensure_tag() {
+            local tag="$1"
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              return 0
+            fi
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "豆包随时说 ${tag#v}"
+            git push origin "$tag"
+          }
+
+          # 手动打的 tag：沿用指定版本，不再自动 bump。
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            emit "${GITHUB_REF_NAME}"
+            exit 0
+          fi
+
+          # 手动指定版本（workflow_dispatch）。
+          if [[ -n "${MANUAL_VERSION:-}" ]]; then
+            TAG="v${MANUAL_VERSION#v}"
+            ensure_tag "$TAG"
+            emit "$TAG"
+            exit 0
+          fi
+
+          # appcast 回推会再进一次 main，不能再发一版。
+          HEAD_MSG="$(git log -1 --pretty=%s)"
+          if [[ "$HEAD_MSG" == "chore: appcast "* ]]; then
+            skip "appcast 回推，跳过发版"
+            exit 0
+          fi
+
+          # 只在这次推送碰到应用代码时发版；文档 / 工作流 / appcast 单独改不动版本号。
+          # workflow_dispatch 且没填版本：视为「现在就发当前 HEAD」，不看 diff。
+          if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
+            BEFORE="${EVENT_BEFORE:-}"
+            if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              BEFORE="$(git rev-parse HEAD^ 2>/dev/null || true)"
+            fi
+
+            RELEASE_PATHS_REGEX='^(Sources/|Helper/|Resources/|Package\.swift|Package\.resolved|build\.sh|package-dmg\.sh|notarize\.sh|codesign-lib\.sh)'
+
+            if [[ -n "$BEFORE" ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              CHANGED="$(git diff --name-only "$BEFORE" HEAD || true)"
+              echo "相对上一推送的变更："
+              echo "$CHANGED"
+              if ! echo "$CHANGED" | grep -qE "$RELEASE_PATHS_REGEX"; then
+                skip "本次推送没有应用代码变化，跳过发版"
+                exit 0
+              fi
+            else
+              echo "没有可比较的上一提交，按应用代码处理"
+            fi
+          fi
+
+          EXISTING="$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          if [[ -n "$EXISTING" ]]; then
+            if gh release view "$EXISTING" >/dev/null 2>&1; then
+              skip "HEAD 已发布为 $EXISTING"
+              exit 0
+            fi
+            emit "$EXISTING"
+            exit 0
+          fi
+
+          LATEST="$(latest_stable)"
+          if [[ -z "$LATEST" ]]; then
+            NEXT="v1.0.0"
+          else
+            NEXT="$(bump_patch "$LATEST")"
+          fi
+
+          while git rev-parse -q --verify "refs/tags/$NEXT" >/dev/null; do
+            if [[ "$(git rev-parse "${NEXT}^{commit}")" == "$(git rev-parse HEAD)" ]]; then
+              break
+            fi
+            echo "$NEXT 已指向其他提交，再 +1"
+            NEXT="$(bump_patch "$NEXT")"
+          done
+
+          while gh release view "$NEXT" >/dev/null 2>&1; do
+            echo "$NEXT 的 Release 已存在，再 +1"
+            NEXT="$(bump_patch "$NEXT")"
+          done
+
+          ensure_tag "$NEXT"
+          emit "$NEXT"
+
   release:
     name: Build, sign & notarize
+    needs: decide
+    if: needs.decide.outputs.should_release == 'true'
     runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ needs.decide.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.decide.outputs.version }}
+      RELEASE_SHORT_VERSION: ${{ needs.decide.outputs.short_version }}
+      RELEASE_DMG: ${{ needs.decide.outputs.dmg }}
+      RELEASE_ZIP: ${{ needs.decide.outputs.zip }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: 解析版本号
-        id: version
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          # CFBundleShortVersionString 只接受数字点分格式，
-          # 所以 1.2.0-beta1 这类预发布号在写进 Info.plist 前要砍掉后缀。
-          SHORT_VERSION="${VERSION%%-*}"
-
-          if ! [[ "$SHORT_VERSION" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
-            echo "::error::tag 格式不对：$TAG（应形如 v1.2.3 或 v1.2.3-beta1）"
-            exit 1
-          fi
-
-          {
-            echo "tag=$TAG"
-            echo "version=$VERSION"
-            echo "short_version=$SHORT_VERSION"
-            echo "dmg=DoubaoVoiceApp-$VERSION.dmg"
-            echo "zip=DoubaoVoiceApp-$VERSION.zip"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Swift version
         run: swift --version
@@ -114,11 +269,11 @@ jobs:
 
       - name: 编译并签名（universal）
         env:
-          APP_VERSION: ${{ steps.version.outputs.short_version }}
+          APP_VERSION: ${{ env.RELEASE_SHORT_VERSION }}
           # Sparkle 拿 CFBundleVersion 比较版本新旧，所以它必须跟着版本号走。
           # 早先用的是 github.run_number：公证失败重跑一次旧 tag，它的 build number
           # 就会超过更新的版本，appcast 里会出现「旧版本更新」的错乱。
-          BUILD_NUMBER: ${{ steps.version.outputs.short_version }}
+          BUILD_NUMBER: ${{ env.RELEASE_SHORT_VERSION }}
           CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           CODE_SIGN_TIMESTAMP: '1' # 公证要求安全时间戳
         run: ./build.sh --universal
@@ -174,11 +329,11 @@ jobs:
           # 全靠符号链接组织，跟随之后签名直接作废，用户端装不上。
           # 这一步排在 staple 之后，压进去的是已经装订好票据的 .app。
           ditto -c -k --sequesterRsrc --keepParent \
-            "$APP" "dist/${{ steps.version.outputs.zip }}"
+            "$APP" "dist/${RELEASE_ZIP}"
 
       - name: 打包 DMG
         env:
-          DMG_VERSION: ${{ steps.version.outputs.version }}
+          DMG_VERSION: ${{ env.RELEASE_VERSION }}
           CODE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           CODE_SIGN_TIMESTAMP: '1'
         run: ./package-dmg.sh
@@ -189,7 +344,7 @@ jobs:
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           set -euo pipefail
-          DMG="dist/${{ steps.version.outputs.dmg }}"
+          DMG="dist/${RELEASE_DMG}"
 
           ./notarize.sh "$DMG"
           xcrun stapler staple "$DMG"
@@ -198,7 +353,7 @@ jobs:
         run: |
           set -euo pipefail
           APP="dist/豆包随时说.app"
-          DMG="dist/${{ steps.version.outputs.dmg }}"
+          DMG="dist/${RELEASE_DMG}"
 
           # 装订票据会往 bundle 里写文件，确认它没把签名弄脏。
           codesign --verify --deep --strict --verbose=2 "$APP"
@@ -227,7 +382,7 @@ jobs:
           echo "---- 更新 zip 内的 .app ----"
           UNZIP_DIR="$RUNNER_TEMP/zip-verify"
           rm -rf "$UNZIP_DIR" && mkdir -p "$UNZIP_DIR"
-          ditto -x -k "dist/${{ steps.version.outputs.zip }}" "$UNZIP_DIR"
+          ditto -x -k "dist/${RELEASE_ZIP}" "$UNZIP_DIR"
           codesign --verify --deep --strict --verbose=2 "$UNZIP_DIR/豆包随时说.app"
           xcrun stapler validate "$UNZIP_DIR/豆包随时说.app"
           spctl --assess --type execute --verbose=4 "$UNZIP_DIR/豆包随时说.app"
@@ -237,10 +392,10 @@ jobs:
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.version.outputs.dmg }}
+          name: ${{ env.RELEASE_DMG }}
           path: |
-            dist/${{ steps.version.outputs.dmg }}
-            dist/${{ steps.version.outputs.zip }}
+            dist/${{ env.RELEASE_DMG }}
+            dist/${{ env.RELEASE_ZIP }}
           if-no-files-found: error
 
       - name: 创建 GitHub Release
@@ -248,11 +403,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "豆包随时说 ${{ steps.version.outputs.version }}" \
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "${RELEASE_TAG} 的 Release 已存在，跳过创建"
+            exit 0
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --title "豆包随时说 ${RELEASE_VERSION}" \
             --generate-notes \
-            "dist/${{ steps.version.outputs.dmg }}" \
-            "dist/${{ steps.version.outputs.zip }}"
+            "dist/${RELEASE_DMG}" \
+            "dist/${RELEASE_ZIP}"
 
       - name: 更新 appcast 并推回 main
         env:
@@ -266,8 +425,8 @@ jobs:
             exit 1
           fi
 
-          TAG="${{ steps.version.outputs.tag }}"
-          ZIP="${{ steps.version.outputs.zip }}"
+          TAG="${RELEASE_TAG}"
+          ZIP="${RELEASE_ZIP}"
 
           # tag 触发时 checkout 的是 detached HEAD，得先切回 main 才能提交。
           # 直接以 origin/main 为基准，checkout 的浅克隆没有完整历史，rebase 会失败。
@@ -291,8 +450,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add appcast.xml
-          git commit -m "chore: appcast 更新到 ${{ steps.version.outputs.version }}"
-          # 本 workflow 只监听 tag，推 main 不会触发它自己，没有循环风险。
+          git commit -m "chore: appcast 更新到 ${RELEASE_VERSION}"
+          # 推回 main 会再进本 workflow，decide job 靠提交说明跳过，不会循环出包。
           git push origin main
 
       - name: 清理凭证

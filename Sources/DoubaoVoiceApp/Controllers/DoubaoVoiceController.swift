@@ -120,9 +120,18 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
         set {
             voiceActiveLock.lock()
+            let wasActive = _doubaoVoiceActive
             _doubaoVoiceActive = newValue
             voiceActiveLock.unlock()
+            if wasActive && !newValue {
+                notifyIdleForAppUpdateIfNeeded()
+            }
         }
+    }
+
+    /// 语音会话或切换尚未收尾：自动更新应等它结束再重启，避免打断录音。
+    var isBusyForAppUpdate: Bool {
+        doubaoVoiceActive || voiceTransitionInProgress || pendingActionTimer != nil
     }
 
     /// 事件监听线程唯一能读的快捷键状态。
@@ -622,6 +631,7 @@ final class DoubaoVoiceController: EventTapDelegate {
         if !doubaoVoiceActive && restoreImeTimer == nil {
             mediaPauser.resumeAfterVoiceSession()
         }
+        notifyIdleForAppUpdateIfNeeded()
     }
 
     private func markDoubaoVoiceStoppedByExternalActivity(_ reason: String) {
@@ -1233,4 +1243,10 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     static let alertNotification = Notification.Name("DoubaoVoiceController.alert")
+    static let didBecomeIdleNotification = Notification.Name("DoubaoVoiceController.didBecomeIdle")
+
+    private func notifyIdleForAppUpdateIfNeeded() {
+        guard !isBusyForAppUpdate else { return }
+        NotificationCenter.default.post(name: Self.didBecomeIdleNotification, object: nil)
+    }
 }
