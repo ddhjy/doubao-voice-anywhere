@@ -29,6 +29,23 @@ enum DoubaoVoiceHUDDetector {
 
     private static var cachedIMEPid: pid_t?
 
+    /// 豆包输入法进程是否在跑。必须在主线程调用。
+    static func isIMEProcessRunning() -> Bool {
+        imePid() != nil
+    }
+
+    /// 豆包进程有没有任意在屏窗口（含 ⌥ 角标这类小窗）。
+    /// 用来判断输入法是否已经挂到当前输入上下文，和「是否在录音」不是一回事。
+    /// 必须在主线程调用。
+    static func hasAnyOnscreenWindow() -> Bool {
+        guard let pid = imePid() else { return false }
+        guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+            as? [[String: Any]]
+        else { return false }
+
+        return infos.contains { windowOwnerPid($0) == pid }
+    }
+
     /// 豆包语音胶囊当前是否在屏。找不到豆包输入法进程时返回 false。
     /// 必须在主线程调用（内部使用 NSWorkspace / CGWindowList）。
     static func isHUDVisible() -> Bool {

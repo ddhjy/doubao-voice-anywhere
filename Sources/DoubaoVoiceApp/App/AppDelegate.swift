@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var permissionRetryTimer: Timer?
     private var keepAliveActivity: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var pendingIMEWarmup: DispatchWorkItem?
     private lazy var preferencesWindowController = PreferencesWindowController(
         restartEventTap: { [weak self] in self?.restartTap(nil) },
         setHotkeyCaptureActive: { [weak self] active in
@@ -59,10 +61,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             scheduleEventTapRetry()
         }
 
+        observeWakeForIMEWarmup()
+        scheduleIMEWarmup(after: 2.0, reason: "启动")
+
         refreshMenu()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        pendingIMEWarmup?.cancel()
+        pendingIMEWarmup = nil
+        if let observer = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            wakeObserver = nil
+        }
         eventTap.stop()
         voiceController.tearDown()
         Logger.shared.info("DoubaoVoiceApp 退出")
@@ -224,6 +235,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             Logger.shared.warn("刷新自启动配置失败: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - 豆包输入法预热
+
+    private func observeWakeForIMEWarmup() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleIMEWarmup(after: 1.5, reason: "唤醒")
+        }
+    }
+
+    private func scheduleIMEWarmup(after delay: TimeInterval, reason: String) {
+        pendingIMEWarmup?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingIMEWarmup = nil
+            self.voiceController.warmupDoubaoIME(reason: reason)
+        }
+        pendingIMEWarmup = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // MARK: - 监听重试
