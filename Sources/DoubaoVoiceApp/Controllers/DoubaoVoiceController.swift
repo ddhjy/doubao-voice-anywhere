@@ -41,9 +41,6 @@ final class DoubaoVoiceController: EventTapDelegate {
     /// 豆包进程还没起来时，TIS 报成功也要再等进程；开机冷启动可能到数秒。
     private let inputSourceColdStartTimeout: TimeInterval = 5.0
     private let inputSourcePollInterval: TimeInterval = 0.01
-    /// 已选中豆包但还没有任何在屏窗口时，焦点刷新后再等窗口出现的上限。
-    /// 超时仍发 Option，不当成失败。
-    private let imeAttachWindowTimeout: TimeInterval = 1.0
     /// 重挂载输入法时单跳的等待上限。这条路径已经是失败补救，三跳串起来不能太久，
     /// 否则用户在整个过程里按快捷键都会被「仍在处理中」挡掉。实测单跳 <100ms。
     private let remountStepTimeout: TimeInterval = 0.6
@@ -567,7 +564,7 @@ final class DoubaoVoiceController: EventTapDelegate {
                 self.finishVoiceTransition()
                 return
             }
-            self.waitForDoubaoIME(onTimeout: {
+            self.waitForDoubaoIME(attachForColdStart: self.voiceStartIsCold, onTimeout: {
                 self.finishVoiceTransition()
             }) {
                 self.fireVoiceStartTap(attempt: .initial)
@@ -1097,7 +1094,11 @@ final class DoubaoVoiceController: EventTapDelegate {
         }
     }
 
-    private func waitForDoubaoIME(onTimeout: (() -> Void)? = nil, then onReady: @escaping () -> Void) {
+    private func waitForDoubaoIME(
+        attachForColdStart: Bool = false,
+        onTimeout: (() -> Void)? = nil,
+        then onReady: @escaping () -> Void
+    ) {
         let processAlreadyRunning = DoubaoVoiceHUDDetector.isIMEProcessRunning()
         let timeout = processAlreadyRunning ? inputSourceSwitchTimeout : inputSourceColdStartTimeout
         waitForInputSource(
@@ -1110,14 +1111,19 @@ final class DoubaoVoiceController: EventTapDelegate {
             deadline: Date(timeIntervalSinceNow: timeout),
             onTimeout: onTimeout
         ) {
-            self.ensureDoubaoAttachedThenTrigger(onReady)
+            self.ensureDoubaoAttachedThenTrigger(attachForColdStart: attachForColdStart, then: onReady)
         }
     }
 
-    /// TIS 已是豆包且进程在跑之后，确认输入上下文真的挂上了再发 Option。
-    /// 还没有任何在屏窗口（含 ⌥ 角标）时先强制焦点刷新，再最多等一会儿；
-    /// 超时仍继续，不当成失败。
-    private func ensureDoubaoAttachedThenTrigger(_ onReady: @escaping () -> Void) {
+    /// TIS 已是豆包且进程在跑之后再发 Option。
+    ///
+    /// 热路径只做白名单 App 的短焦点刷新（和改冷启动保护之前一样）。
+    /// 冷启动多一次强制刷新，让前台 App 接上新输入源；不再干等在屏窗口——
+    /// 角标 / 胶囊都是 Option 发出之后才出现，在这里等只会白加约 1 秒。
+    private func ensureDoubaoAttachedThenTrigger(
+        attachForColdStart: Bool,
+        then onReady: @escaping () -> Void
+    ) {
         let proceed = {
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + self.voiceTriggerAfterSwitchDelay,
@@ -1125,25 +1131,14 @@ final class DoubaoVoiceController: EventTapDelegate {
             )
         }
 
-        if DoubaoVoiceHUDDetector.hasAnyOnscreenWindow() {
+        guard attachForColdStart else {
             nudgeForegroundAppIfNeeded(description: "豆包输入法", completion: proceed)
             return
         }
 
-        Logger.shared.debug("豆包输入法已选中但还没有在屏窗口，强制焦点刷新以挂上输入上下文")
-        InputSourceActivationNudge.shared.performForced(description: "豆包输入法冷启动挂载") { [weak self] in
-            guard let self = self else { return }
-            self.pollUntil(
-                { DoubaoVoiceHUDDetector.hasAnyOnscreenWindow() },
-                deadline: Date(timeIntervalSinceNow: self.imeAttachWindowTimeout)
-            ) { appeared in
-                if appeared {
-                    Logger.shared.debug("豆包输入法已出现在屏窗口: \(DoubaoVoiceHUDDetector.describeOnscreenWindows())")
-                } else {
-                    Logger.shared.debug("等待豆包在屏窗口超时，继续发送 Option 单击")
-                }
-                proceed()
-            }
+        Logger.shared.debug("豆包输入法冷启动，强制焦点刷新后发送 Option 单击")
+        InputSourceActivationNudge.shared.performForced(description: "豆包输入法冷启动挂载") {
+            proceed()
         }
     }
 
