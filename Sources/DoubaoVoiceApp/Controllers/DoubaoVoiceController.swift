@@ -270,6 +270,14 @@ final class DoubaoVoiceController: EventTapDelegate {
         imeReadiness.warmup(reason: reason)
     }
 
+    /// 闲置后把豆包输入法进程养着，避免十分钟后再按快捷键又走冷启动。
+    func startIMEKeepAlive() {
+        imeReadiness.startKeepAlive { [weak self] in
+            guard let self = self else { return false }
+            return !self.voiceTransitionInProgress && !self.doubaoVoiceActive && self.pendingActionTimer == nil
+        }
+    }
+
     /// 重算快捷键快照（主线程调用；配置或系统输入法列表变化时触发）。
     private func refreshHotkeyGate() {
         let voice = GeneralSettings.voiceHotkey
@@ -560,7 +568,8 @@ final class DoubaoVoiceController: EventTapDelegate {
         sourceBeforeVoiceHotkey = nil
 
         let processAlreadyRunning = DoubaoVoiceHUDDetector.isIMEProcessRunning()
-        voiceStartIsCold = !imeReadiness.hasWarmedUp || !processAlreadyRunning
+        // 冷启动只看进程在不在：预热失败不能把之后每一次都锁死在强制焦点刷新上。
+        voiceStartIsCold = !processAlreadyRunning
         if voiceStartIsCold {
             Logger.shared.debug(
                 "豆包输入法按冷启动处理：预热=\(imeReadiness.hasWarmedUp), 进程已在跑=\(processAlreadyRunning)"
@@ -667,6 +676,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     private func verifyVoiceStarted(deadline: Date, attempt: VoiceStartAttempt) {
         if hudVisibleNow() {
             doubaoVoiceActive = true
+            imeReadiness.markReady()
             finishVoiceTransition()
             startHudWatch()
             Logger.shared.debug("豆包语音输入已启动（语音胶囊已确认出现），等待再次按 \(voiceHotkeyLabel) 停止")
@@ -687,6 +697,7 @@ final class DoubaoVoiceController: EventTapDelegate {
            DoubaoVoiceHUDDetector.isIMEProcessRunning(),
            DoubaoVoiceHUDDetector.hasAnyOnscreenWindow() {
             doubaoVoiceActive = true
+            imeReadiness.markReady()
             finishVoiceTransition()
             Logger.shared.warn("没探测到语音胶囊（本次运行从未观测到过，但豆包已有在屏窗口，可能界面有变化），按旧逻辑视为已启动。豆包在屏窗口: \(DoubaoVoiceHUDDetector.describeOnscreenWindows())")
             return

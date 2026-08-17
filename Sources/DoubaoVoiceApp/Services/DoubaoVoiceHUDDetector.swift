@@ -34,6 +34,20 @@ enum DoubaoVoiceHUDDetector {
         imePid() != nil
     }
 
+    /// 豆包输入法 App 的安装位置。优先问 Launch Services，找不到再扫常见路径。
+    static func imeAppURL() -> URL? {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: imeBundleID) {
+            return url
+        }
+        let fallbacks = [
+            "/Library/Input Methods/DoubaoIme.app",
+            "/Library/Input Methods/DoubaoIME.app",
+        ]
+        return fallbacks
+            .map { URL(fileURLWithPath: $0) }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     /// 豆包进程有没有任意在屏窗口（含 ⌥ 角标这类小窗）。
     /// 用来判断输入法是否已经挂到当前输入上下文，和「是否在录音」不是一回事。
     /// 必须在主线程调用。

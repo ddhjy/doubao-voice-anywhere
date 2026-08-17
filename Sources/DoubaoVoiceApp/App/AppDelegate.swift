@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         observeWakeForIMEWarmup()
+        voiceController.startIMEKeepAlive()
         scheduleIMEWarmup(after: 2.0, reason: "启动")
 
         refreshMenu()
