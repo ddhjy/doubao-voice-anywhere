@@ -15,6 +15,18 @@
     <language>zh-CN</language>
     <!-- NEW_ITEM_ANCHOR：新条目插在这一行下面，tools/update-appcast.sh 靠它定位，别删。 -->
     <item>
+      <title>1.0.8</title>
+      <link>https://github.com/ddhjy/doubao-voice-anywhere/releases/tag/v1.0.8</link>
+      <sparkle:version>1.0.8</sparkle:version>
+      <sparkle:shortVersionString>1.0.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0.0</sparkle:minimumSystemVersion>
+      <pubDate>Mon, 17 Aug 2026 02:16:58 +0000</pubDate>
+      <description><![CDATA[
+  <p><strong>Full Changelog</strong>: https://github.com/ddhjy/doubao-voice-anywhere/compare/v1.0.7...v1.0.8</p>
+      ]]></description>
+      <enclosure url="https://github.com/ddhjy/doubao-voice-anywhere/releases/download/v1.0.8/DoubaoVoiceApp-1.0.8.zip" length="5784511" type="application/octet-stream" sparkle:edSignature="cW8U9DHK0LA4gIk7IK/px3/ph7gKff60T5EJgmVSFBhXduFP3Q7chUAIZDPVDRxNVWRHq4ZSrAaJj8jzNeUJAA==" />
+    </item>
+    <item>
       <title>1.0.7</title>
       <link>https://github.com/ddhjy/doubao-voice-anywhere/releases/tag/v1.0.7</link>
       <sparkle:version>1.0.7</sparkle:version>
