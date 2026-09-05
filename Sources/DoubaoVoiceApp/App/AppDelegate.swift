@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         observeWakeForIMEWarmup()
         voiceController.startIMEKeepAlive()
-        scheduleIMEWarmup(after: 2.0, reason: "启动")
+        scheduleIMEWarmup(after: 0, reason: "启动")
 
         refreshMenu()
     }
@@ -250,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleIMEWarmup(after: 1.5, reason: "唤醒")
+            self?.scheduleIMEWarmup(after: 0, reason: "唤醒")
         }
     }
 

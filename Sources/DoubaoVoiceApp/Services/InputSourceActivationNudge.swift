@@ -148,6 +148,13 @@ final class InputSourceActivationNudge {
     }
 
     private func currentInteractionApplication() -> NSRunningApplication? {
+        // 全局快捷键通常来自正在使用的前台 App，NSWorkspace 的本地状态即可确定。
+        // 每次先跨进程查 AX 焦点会多花数十到上百毫秒，未命中白名单也会付这份成本。
+        // 菜单 / 设置让本 App 在前台时，才用 AX 和窗口顺序寻找真正的输入目标。
+        if let frontmostApp = NSWorkspace.shared.frontmostApplication,
+           !isCurrentApp(frontmostApp), frontmostApp.activationPolicy == .regular {
+            return frontmostApp
+        }
         if let focusedApp = accessibilityFocusedApplication(), !isCurrentApp(focusedApp) {
             return focusedApp
         }

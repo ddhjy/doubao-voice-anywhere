@@ -35,6 +35,7 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     // MARK: - 时间常量（单位：秒）
 
+    /// 给用户松开快捷键留出的最短时间；输入源准备与这段等待并行。
     private let actionAfterHotkeyDelay: TimeInterval = 0.2
     private let voiceTriggerAfterSwitchDelay: TimeInterval = 0.08
     private let inputSourceSwitchTimeout: TimeInterval = 2.0
@@ -175,6 +176,9 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     private var pendingActionTimer: DispatchWorkItem?
     private var restoreImeTimer: DispatchWorkItem?
+    private var voiceTapNotBefore: DispatchTime?
+    private var voiceStartRequestedAt: TimeInterval?
+    private var voiceStartTapCount = 0
 
     // 语音胶囊探测（主线程访问）。
     // hudDetectionProven：本次进程运行期间是否成功观测到过胶囊。观测到过，
@@ -265,6 +269,8 @@ final class DoubaoVoiceController: EventTapDelegate {
         stopHudWatch()
         imeReadiness.cancel()
         voiceSessionStartedAt = nil
+        voiceTapNotBefore = nil
+        voiceStartRequestedAt = nil
         voiceTransitionInProgress = false
         // 退出前把被暂停的媒体还给用户（没暂停过则是 no-op）。
         mediaPauser.resumeAfterVoiceSession()
@@ -274,7 +280,8 @@ final class DoubaoVoiceController: EventTapDelegate {
     func warmupDoubaoIME(reason: String) {
         // 唤醒后即使豆包进程仍在，也不能沿用休眠前的输入上下文。
         lastVoiceActivityAt = nil
-        guard !voiceTransitionInProgress, !doubaoVoiceActive, pendingActionTimer == nil else {
+        guard !voiceTransitionInProgress, !doubaoVoiceActive,
+              pendingActionTimer == nil, restoreImeTimer == nil else {
             Logger.shared.debug("语音进行中，跳过豆包输入法预热（\(reason)）")
             return
         }
@@ -285,7 +292,8 @@ final class DoubaoVoiceController: EventTapDelegate {
     func startIMEKeepAlive() {
         imeReadiness.startKeepAlive { [weak self] in
             guard let self = self else { return false }
-            return !self.voiceTransitionInProgress && !self.doubaoVoiceActive && self.pendingActionTimer == nil
+            return !self.voiceTransitionInProgress && !self.doubaoVoiceActive
+                && self.pendingActionTimer == nil && self.restoreImeTimer == nil
         }
     }
 
@@ -507,10 +515,21 @@ final class DoubaoVoiceController: EventTapDelegate {
     // MARK: - 说话快捷键调度
 
     private func scheduleDoubaoToggle() {
-        Logger.shared.debug("检测到说话快捷键 \(voiceHotkeyLabel)，\(actionAfterHotkeyDelay)s 后切换豆包语音")
+        guard !voiceTransitionInProgress else {
+            sourceBeforeVoiceHotkey = nil
+            Logger.shared.debug("豆包语音仍在准备或停止，忽略重复快捷键")
+            return
+        }
         cancelPendingActionTimer()
-        // 保留收尾计时器，启动时才能知道上一段尚未结束。恢复输入法本身会检查
-        // pendingActionTimer，不会抢在本次动作前切走输入法。
+        if !doubaoVoiceActive {
+            Logger.shared.debug("检测到说话快捷键 \(voiceHotkeyLabel)，立即准备输入源，与按键释放等待并行")
+            voiceStartRequestedAt = ProcessInfo.processInfo.systemUptime
+            voiceTapNotBefore = .now() + actionAfterHotkeyDelay
+            toggleDoubaoVoice()
+            return
+        }
+        Logger.shared.debug("检测到说话快捷键 \(voiceHotkeyLabel)，\(actionAfterHotkeyDelay)s 后停止豆包语音")
+        // 恢复输入法会检查 pendingActionTimer，不会抢在停止动作前切走输入法。
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.pendingActionTimer = nil
@@ -566,6 +585,10 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func startDoubaoVoice() {
+        if voiceStartRequestedAt == nil {
+            voiceStartRequestedAt = ProcessInfo.processInfo.systemUptime
+        }
+        voiceStartTapCount = 0
         voiceSessionStartedAt = nil
         let wasFinalizing = restoreImeTimer != nil
         cancelRestoreImeTimer()
@@ -600,9 +623,10 @@ final class DoubaoVoiceController: EventTapDelegate {
                 self.finishVoiceTransition()
                 return
             }
-            self.waitForDoubaoIME(attachForColdStart: self.voiceStartIsCold, onTimeout: {
+            self.waitForDoubaoIME(forceAttachment: true, onTimeout: {
                 self.finishVoiceTransition()
             }) {
+                self.logVoiceStartLatency(stage: "输入上下文已就绪")
                 self.fireVoiceStartTap(attempt: .initial)
             }
         }
@@ -672,18 +696,37 @@ final class DoubaoVoiceController: EventTapDelegate {
         voiceSessionStartedAt = startedAt
         lastVoiceActivityAt = startedAt
         imeReadiness.markReady()
+        logVoiceStartLatency(stage: "新胶囊已出现，发送启动单击 \(voiceStartTapCount) 次")
         finishVoiceTransition()
         startHudWatch()
         Logger.shared.debug("豆包语音会话已启动（新胶囊已确认出现），等待再次按 \(voiceHotkeyLabel) 停止")
     }
 
     private func continueVoiceStart(attempt: VoiceStartAttempt) {
+        if let deadline = voiceTapNotBefore, DispatchTime.now() < deadline {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, self.voiceTransitionInProgress else { return }
+                self.pendingActionTimer = nil
+                self.fireVoiceStartTap(attempt: attempt)
+            }
+            pendingActionTimer = work
+            DispatchQueue.main.asyncAfter(deadline: deadline, execute: work)
+            return
+        }
         let timeout = voiceStartIsCold ? coldHudAppearTimeout : hudAppearTimeout
         KeyboardSimulator.tapLeftOption(if: { [weak self] in
             guard let self = self, self.voiceTransitionInProgress else { return false }
+            guard self.isDoubaoIMEActive() else {
+                Logger.shared.debug("启动发键前输入法已改变，取消本次语音启动")
+                self.finishVoiceTransition()
+                return false
+            }
             // 等待修饰键释放、排队期间，先前的 Option 可能才被豆包处理。
             // 这次检查必须贴着真正的 key down，而不是仅在调用 tap 时检查。
-            return !self.hudVisibleNow()
+            guard !self.hudVisibleNow() else { return false }
+            self.voiceStartTapCount += 1
+            self.logVoiceStartLatency(stage: "发送第 \(self.voiceStartTapCount) 次启动单击")
+            return true
         }) { [weak self] sent in
             guard let self = self, self.voiceTransitionInProgress else { return }
             if !sent, attempt == .initial {
@@ -723,6 +766,8 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func finishVoiceTransition() {
+        voiceTapNotBefore = nil
+        voiceStartRequestedAt = nil
         voiceTransitionInProgress = false
         // 启动失败的静默分支（切不到豆包输入法、等待超时、重试放弃等）
         // 不经过 scheduleRestorePreviousIME，在这里兜底立即恢复媒体——这些
@@ -733,6 +778,12 @@ final class DoubaoVoiceController: EventTapDelegate {
             mediaPauser.resumeAfterVoiceSession()
         }
         notifyIdleForAppUpdateIfNeeded()
+    }
+
+    private func logVoiceStartLatency(stage: String) {
+        guard let requestedAt = voiceStartRequestedAt else { return }
+        let milliseconds = Int((ProcessInfo.processInfo.systemUptime - requestedAt) * 1_000)
+        Logger.shared.debug("语音启动耗时：\(stage)，距触发 \(milliseconds) 毫秒")
     }
 
     private func markDoubaoVoiceStoppedByExternalActivity(_ reason: String) {
@@ -1211,7 +1262,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     }
 
     private func waitForDoubaoIME(
-        attachForColdStart: Bool = false,
+        forceAttachment: Bool = false,
         onTimeout: (() -> Void)? = nil,
         then onReady: @escaping () -> Void
     ) {
@@ -1227,32 +1278,33 @@ final class DoubaoVoiceController: EventTapDelegate {
             deadline: Date(timeIntervalSinceNow: timeout),
             onTimeout: onTimeout
         ) {
-            self.ensureDoubaoAttachedThenTrigger(attachForColdStart: attachForColdStart, then: onReady)
+            self.ensureDoubaoAttachedThenTrigger(forceAttachment: forceAttachment, then: onReady)
         }
     }
 
     /// TIS 已是豆包且进程在跑之后再发 Option。
     ///
-    /// 热路径只做白名单 App 的短焦点刷新（和改冷启动保护之前一样）。
-    /// 首次使用、唤醒或闲置后多一次强制刷新，让前台 App 接上新输入源；不再干等在屏窗口——
-    /// 角标 / 胶囊都是 Option 发出之后才出现，在这里等只会白加约 1 秒。
+    /// 语音启动总是刷新焦点：即使刚用过，切换输入框 / App 后上下文也可能失效。
+    /// 刷新与切换稳定期、快捷键释放等待重叠，避免先空等超时再刷新重试。
+    /// 菜单里的单纯切换输入法仍遵循用户的 App 白名单。
     private func ensureDoubaoAttachedThenTrigger(
-        attachForColdStart: Bool,
+        forceAttachment: Bool,
         then onReady: @escaping () -> Void
     ) {
+        let switchReadyAt = DispatchTime.now() + voiceTriggerAfterSwitchDelay
         let proceed = {
             DispatchQueue.main.asyncAfter(
-                deadline: .now() + self.voiceTriggerAfterSwitchDelay,
+                deadline: switchReadyAt,
                 execute: onReady
             )
         }
 
-        guard attachForColdStart else {
+        guard forceAttachment else {
             nudgeForegroundAppIfNeeded(description: "豆包输入法", completion: proceed)
             return
         }
 
-        Logger.shared.debug("豆包输入上下文需要重新激活，强制焦点刷新后发送 Option 单击")
+        Logger.shared.debug("预先刷新豆包输入上下文，完成后发送 Option 单击")
         InputSourceActivationNudge.shared.performForced(description: "豆包输入上下文重新挂载") {
             proceed()
         }
@@ -1265,8 +1317,9 @@ final class DoubaoVoiceController: EventTapDelegate {
             isReady: { [weak self] in self?.isNormalChineseInputMethodActive() ?? false },
             onTimeout: onTimeout
         ) {
+            let bridgeReadyAt = DispatchTime.now() + self.inputMethodBridgeDelay
             self.nudgeForegroundAppIfNeeded(description: "日常中文输入法") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.inputMethodBridgeDelay, execute: onReady)
+                DispatchQueue.main.asyncAfter(deadline: bridgeReadyAt, execute: onReady)
             }
         }
     }

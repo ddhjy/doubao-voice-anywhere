@@ -18,9 +18,8 @@
 - `Sources/DoubaoVoiceApp/Services/Hotkey.swift`：可配置快捷键的值类型。组合键 / 功能键走 keyDown 按下即触发并吞键；单独修饰键走 flagsChanged，抬起时才触发且要求按下期间没配合别的输入，除 Fn 外一律不吞（Fn 不吞系统会额外弹听写 / Emoji 面板）。修饰键不分左右。
 - `Sources/DoubaoVoiceApp/Controllers/EventTapController.swift`：CGEventTap 包装，独立线程。
 - `Sources/DoubaoVoiceApp/Services/GeneralSettings.swift`：用户配置（UserDefaults），默认值必须与老版本硬编码一致。
-- `Sources/DoubaoVoiceApp/Services/DoubaoVoiceHUDDetector.swift`：语音胶囊覆盖录音和识别优化整个会话，可见不等于正在录音。启动前要排除旧胶囊，重试和键盘队列实际发键前都要复查，避免多发 Option 把启动变成停止。首次使用 / 唤醒 / 闲置一分钟后，先刷新输入上下文再发键，不能只看进程是否存活。
-- `Sources/DoubaoVoiceApp/Services/DoubaoIMEReadiness.swift`：启动 / 唤醒 / 进程退出时静默拉起豆包输入法进程（不切 TIS），避免闲置后第一次按快捷键再冷启动。TIS 切过去再切回只作为静默拉起失败的退路。
-- `Sources/DoubaoVoiceApp/Services/DoubaoIMEReadiness.swift`：启动 / 唤醒 / 进程退出时静默拉起豆包输入法进程（不切 TIS），避免闲置后第一次按快捷键再冷启动。TIS 切过去再切回只作为静默拉起失败的退路。
+- `Sources/DoubaoVoiceApp/Services/DoubaoVoiceHUDDetector.swift`：语音胶囊覆盖录音和识别优化整个会话，可见不等于正在录音。启动前要排除旧胶囊，重试和键盘队列实际发键前都要复查，避免多发 Option 把启动变成停止。每次启动语音先刷新输入上下文，与快捷键释放等待并行；不能只看进程是否存活，也不能先串行等完 200ms 再准备输入法。
+- `Sources/DoubaoVoiceApp/Services/DoubaoIMEReadiness.swift`：启动 / 唤醒立即静默拉起豆包输入法，退出通知加 5 秒巡检补漏。拉起有超时和退避重试，进程稳定后重置退避；不在保活时触发录音。启动 / 唤醒静默拉起失败时才允许 TIS 退路。语音接管必须使旧拉起回调、重试和 TIS 恢复失效，识别收尾期间也不能预热抢输入法。
 - `Sources/DoubaoVoiceApp/Services/KeyboardSimulator.swift`：合成「左 Option 单击」触发豆包语音。合成事件带自识别标记（`isSynthetic`），三个事件回调开头都要先放行它——不然把快捷键设成单独点 Option 会自触发甚至递归。
 - `Sources/DoubaoVoiceApp/Services/MediaPlaybackPauser.swift`：语音期间暂停/恢复系统「正在播放」的媒体。macOS 15.4+ 封锁了第三方进程直调 MediaRemote，所以经系统自带 perl 宿主执行 `Helper/MediaRemoteBridge/`（build.sh 编译进 Resources）；helper 失败只记日志，不许影响语音主流程。会话收尾的恢复要经 `AudioRouteSettler` 守门：等 CoreAudio 信号确认麦克风已释放、蓝牙耳机从通话档（HFP）退回 A2DP，再做静音预热后才发 play——提前恢复会让音乐先以通话档的偏大音量播出再跳回正常。会话收尾的恢复要经 `AudioRouteSettler` 守门：等 CoreAudio 信号确认麦克风已释放、蓝牙耳机从通话档（HFP）退回 A2DP，再做静音预热后才发 play——提前恢复会让音乐先以通话档的偏大音量播出再跳回正常。
 - `Sources/DoubaoVoiceApp/Services/UpdateController.swift`：自动更新（Sparkle 2.9.4）。读不到 Info.plist 里的 `SUFeedURL` 就整个不实例化 updater——开发版正是靠这一条不参与更新。设置里「自动更新到最新版」同时打开定时检查和后台下载；下载完若没在说话就立刻安装重启，否则等语音结束。菜单栏「检查更新…」直接把 target/action 指向 `SPUStandardUpdaterController`，灰显由它自己管。本 App 是 `LSUIElement`，必须实现 `supportsGentleScheduledUpdateReminders` 并在更新会话期间临时切 `.regular`，否则提示窗会压在别的窗口后面，用户根本看不见。

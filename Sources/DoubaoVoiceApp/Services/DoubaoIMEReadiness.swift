@@ -3,9 +3,8 @@ import Foundation
 
 /// 把豆包输入法进程养在后台，避免闲置后第一次按快捷键再付一遍冷启动代价。
 ///
-/// 豆包只在自己是当前输入法时会被系统养着；切回鼠须管 / 美国键盘之后，
-/// 过几分钟进程就会被收掉。下次再按说话快捷键，TIS 虽然立刻报成功，
-/// IMK 还没挂上，Option 单击会落空或多等数秒。
+/// 切回其他输入源后，豆包进程可能退出。下次按说话快捷键时，
+/// 即使 TIS 已报成功，进程和 IMK 仍可能没准备好。
 ///
 /// 保活不走 TIS：豆包输入法是 `LSBackgroundOnly`，直接静默打开
 /// `/Library/Input Methods/DoubaoIme.app` 就能把进程拉起来，当前输入法不变，
@@ -20,10 +19,12 @@ final class DoubaoIMEReadiness {
     private let processPollInterval: TimeInterval = 0.05
     /// 进程起来后再坐一会儿，让 IMK 真正完成挂载（仅 TIS 退路需要）。
     private let settleDuration: TimeInterval = 0.8
-    private let keepAliveInterval: TimeInterval = 60
+    /// 退出通知可能漏掉，短轮询补上；只查进程，不唤起窗口或触发录音。
+    private let keepAliveInterval: TimeInterval = 5
+    private let maximumRetryDelay: TimeInterval = 30
+    private let stableProcessDuration: TimeInterval = 30
 
-    /// 本次进程里是否已经成功预热过（或启动时进程已经在跑）。
-    /// 语音启动用它判断要不要加长胶囊等待。
+    /// 已确认进程在跑；不代表当前前台 App 的输入上下文已经挂载。
     private(set) var hasWarmedUp = false
 
     private var isRunning = false
@@ -31,34 +32,46 @@ final class DoubaoIMEReadiness {
     private var restoreSource: InputSource?
     private var generation = 0
     private var pendingWork: DispatchWorkItem?
+    private var retryWork: DispatchWorkItem?
+    private var nextLaunchAllowedAt = Date.distantPast
+    private var lastLaunchAt: Date?
+    private var retryDelay: TimeInterval = 1
+    private var isCancelled = false
     private var keepAliveTimer: Timer?
     private var terminateObserver: NSObjectProtocol?
     private var canRunKeepAlive: () -> Bool = { true }
 
-    var isWarmupInProgress: Bool { isRunning }
+    var isWarmupInProgress: Bool { isRunning || isLaunching }
 
     /// 语音启动打断预热：取消「切回去」，把原本要恢复的输入源交给调用方。
     /// 没在预热时返回 nil。
     @discardableResult
     func claimForVoiceStart() -> InputSource? {
-        guard isRunning else { return nil }
-
+        let wasWarming = isRunning || isLaunching
         generation += 1
         pendingWork?.cancel()
         pendingWork = nil
+        retryWork?.cancel()
+        retryWork = nil
         isRunning = false
+        isLaunching = false
         let saved = restoreSource
         restoreSource = nil
         // 进程刚被拉起、settle 可能还没走完，不把这次算作成热，
         // 让随后的 Option 单击走冷启动的更长等待。
-        Logger.shared.info("豆包输入法预热被语音启动打断，保持当前输入法")
+        if wasWarming {
+            Logger.shared.info("豆包输入法预热交给语音启动接管，取消后台切回及失败回退")
+        }
         return saved
     }
 
     func cancel() {
+        isCancelled = true
         generation += 1
         pendingWork?.cancel()
         pendingWork = nil
+        retryWork?.cancel()
+        retryWork = nil
         isRunning = false
         isLaunching = false
         restoreSource = nil
@@ -77,13 +90,15 @@ final class DoubaoIMEReadiness {
 
     /// 启动定时保活。进程被系统收掉后会静默再拉起来，不切当前输入法。
     func startKeepAlive(canRun: @escaping () -> Bool) {
+        isCancelled = false
         canRunKeepAlive = canRun
         guard keepAliveTimer == nil else { return }
 
-        let timer = Timer.scheduledTimer(withTimeInterval: keepAliveInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: keepAliveInterval, repeats: true) { [weak self] _ in
             self?.ensureProcessRunning(reason: "保活", allowTISFallback: false)
         }
-        timer.tolerance = 15
+        timer.tolerance = 0.5
+        RunLoop.main.add(timer, forMode: .common)
         keepAliveTimer = timer
 
         terminateObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -96,7 +111,7 @@ final class DoubaoIMEReadiness {
             else { return }
             self?.hasWarmedUp = false
             Logger.shared.info("豆包输入法进程已退出，稍后静默拉起")
-            self?.scheduleEnsureProcess(after: 1.0, reason: "进程退出")
+            self?.scheduleEnsureProcess(after: 0.2, reason: "进程退出")
         }
     }
 
@@ -107,8 +122,14 @@ final class DoubaoIMEReadiness {
 
     /// 进程不在就静默拉起；只有静默拉起失败才走 TIS 切过去再切回来。
     func ensureProcessRunning(reason: String, allowTISFallback: Bool) {
+        guard !isCancelled else { return }
         if DoubaoVoiceHUDDetector.isIMEProcessRunning() {
             hasWarmedUp = true
+            // 连续稳定运行后才清空退避；刚拉起就崩溃的进程不能反复高速重启。
+            if lastLaunchAt.map({ Date().timeIntervalSince($0) >= stableProcessDuration }) ?? true {
+                retryDelay = 1
+                nextLaunchAllowedAt = .distantPast
+            }
             if reason != "保活" {
                 Logger.shared.info("豆包输入法进程已在运行，跳过拉起（\(reason)）")
             }
@@ -123,39 +144,69 @@ final class DoubaoIMEReadiness {
             Logger.shared.debug("豆包输入法预热已在进行，忽略（\(reason)）")
             return
         }
+        hasWarmedUp = false
+        let remainingDelay = nextLaunchAllowedAt.timeIntervalSinceNow
+        guard remainingDelay <= 0 else {
+            scheduleEnsureProcess(after: remainingDelay, reason: "拉起重试")
+            return
+        }
 
+        retryWork?.cancel()
+        retryWork = nil
+        generation += 1
+        let gen = generation
+        lastLaunchAt = Date()
+        nextLaunchAllowedAt = Date(timeIntervalSinceNow: retryDelay)
+        retryDelay = min(retryDelay * 2, maximumRetryDelay)
         isLaunching = true
         Logger.shared.info("豆包输入法进程不在，静默拉起（\(reason)）")
-        launchIMEProcess { [weak self] launched in
-            guard let self = self else { return }
-            self.isLaunching = false
-            if launched || DoubaoVoiceHUDDetector.isIMEProcessRunning() {
-                self.hasWarmedUp = true
-                Logger.shared.info("豆包输入法进程已在运行（\(reason)）")
-                return
-            }
-            guard allowTISFallback else {
-                Logger.shared.warn("静默拉起豆包输入法失败（\(reason)）")
-                return
-            }
-            self.warmupBySelectingIME(reason: reason)
+        let finish: (Bool) -> Void = { [weak self] launched in
+            self?.finishSilentLaunch(
+                generation: gen, launched: launched, reason: reason, allowTISFallback: allowTISFallback
+            )
         }
+        // openApplication 本身也可能迟迟不回调，不能让 isLaunching 永久卡住。
+        let timeout = DispatchWorkItem { finish(false) }
+        pendingWork = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + processWaitTimeout, execute: timeout)
+        launchIMEProcess(generation: gen, then: finish)
     }
 
     // MARK: - 静默拉起
 
     private func scheduleEnsureProcess(after delay: TimeInterval, reason: String) {
-        pendingWork?.cancel()
+        guard !isCancelled else { return }
+        retryWork?.cancel()
+        let gen = generation
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            self.pendingWork = nil
+            guard let self = self, self.generation == gen, !self.isCancelled else { return }
+            self.retryWork = nil
             self.ensureProcessRunning(reason: reason, allowTISFallback: false)
         }
-        pendingWork = work
+        retryWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func launchIMEProcess(then completion: @escaping (Bool) -> Void) {
+    private func finishSilentLaunch(generation gen: Int, launched: Bool, reason: String, allowTISFallback: Bool) {
+        guard generation == gen, isLaunching, !isCancelled else { return }
+        pendingWork?.cancel()
+        pendingWork = nil
+        isLaunching = false
+        if launched || DoubaoVoiceHUDDetector.isIMEProcessRunning() {
+            hasWarmedUp = true
+            Logger.shared.info("豆包输入法进程已在运行（\(reason)）")
+            return
+        }
+        // 用户可能已经开始录音。旧的启动失败回调不能抢输入法或启动 TIS 退路。
+        if allowTISFallback, canRunKeepAlive() {
+            warmupBySelectingIME(reason: reason)
+        } else {
+            Logger.shared.warn("静默拉起豆包输入法失败，稍后重试（\(reason)）")
+            scheduleEnsureProcess(after: max(0.2, nextLaunchAllowedAt.timeIntervalSinceNow), reason: "拉起失败")
+        }
+    }
+
+    private func launchIMEProcess(generation gen: Int, then completion: @escaping (Bool) -> Void) {
         if DoubaoVoiceHUDDetector.isIMEProcessRunning() {
             completion(true)
             return
@@ -169,14 +220,15 @@ final class DoubaoIMEReadiness {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = false
         config.addsToRecentItems = false
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, error in
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { [weak self] _, error in
             DispatchQueue.main.async {
+                guard let self = self, self.generation == gen, self.isLaunching, !self.isCancelled else { return }
                 if let error {
                     Logger.shared.warn("静默拉起豆包输入法失败: \(error.localizedDescription)")
                     completion(false)
                     return
                 }
-                self.waitForProcess(deadline: Date(timeIntervalSinceNow: self.processWaitTimeout)) { ok in
+                self.waitForProcess(generation: gen, deadline: Date(timeIntervalSinceNow: self.processWaitTimeout)) { ok in
                     completion(ok)
                 }
             }
@@ -193,7 +245,7 @@ final class DoubaoIMEReadiness {
             return
         }
 
-        guard !isRunning else {
+        guard !isRunning, !isCancelled, canRunKeepAlive() else {
             Logger.shared.debug("豆包输入法预热已在进行，忽略（\(reason)）")
             return
         }
@@ -201,6 +253,7 @@ final class DoubaoIMEReadiness {
         let original = InputSourceManager.nowSource()
         guard selectDoubao() else {
             Logger.shared.warn("豆包输入法预热失败：切不到豆包（\(reason)）")
+            scheduleEnsureProcess(after: max(0.2, nextLaunchAllowedAt.timeIntervalSinceNow), reason: "预热失败")
             return
         }
 
@@ -210,7 +263,7 @@ final class DoubaoIMEReadiness {
         restoreSource = original
         Logger.shared.info("开始预热豆包输入法（\(reason)）")
 
-        waitForProcess(deadline: Date(timeIntervalSinceNow: processWaitTimeout)) { [weak self] ok in
+        waitForProcess(generation: gen, deadline: Date(timeIntervalSinceNow: processWaitTimeout)) { [weak self] ok in
             guard let self = self, self.generation == gen, self.isRunning else { return }
             guard ok else {
                 Logger.shared.warn("豆包输入法预热超时：进程没起来（\(reason)）")
@@ -229,7 +282,8 @@ final class DoubaoIMEReadiness {
         }
     }
 
-    private func waitForProcess(deadline: Date, then completion: @escaping (Bool) -> Void) {
+    private func waitForProcess(generation gen: Int, deadline: Date, then completion: @escaping (Bool) -> Void) {
+        guard generation == gen, (isLaunching || isRunning), !isCancelled else { return }
         if DoubaoVoiceHUDDetector.isIMEProcessRunning() {
             completion(true)
             return
@@ -239,7 +293,7 @@ final class DoubaoIMEReadiness {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + processPollInterval) { [weak self] in
-            self?.waitForProcess(deadline: deadline, then: completion)
+            self?.waitForProcess(generation: gen, deadline: deadline, then: completion)
         }
     }
 
@@ -254,6 +308,8 @@ final class DoubaoIMEReadiness {
         restoreIfNeeded(target)
         if warmedUp {
             Logger.shared.info("豆包输入法预热完成，进程已在运行")
+        } else {
+            scheduleEnsureProcess(after: max(0.2, nextLaunchAllowedAt.timeIntervalSinceNow), reason: "预热失败")
         }
     }
 
