@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-/// 探测豆包语音 HUD（屏幕下方的录音胶囊）是否可见，作为「豆包是否正在录音」的真值源。
+/// 探测豆包语音 HUD（屏幕下方的胶囊）是否可见，判断语音会话是否仍在进行。
 ///
 /// 背景：本 App 与豆包之间只有「模拟左 Option 单击」这一条单向通道，同一个单击既是开始
 /// 也是结束。只要有一次单击没送达（Electron 应用的文本输入上下文滞后于 TIS 切换），或者
@@ -11,11 +11,12 @@ import Foundation
 ///
 /// 豆包输入法进程在录音时会把语音胶囊窗口 order 到屏幕上，空闲时 order out
 /// （onscreen=false）。用 CGWindowList 查询它有没有「足够大的在屏浮层窗口」
-/// 即可判断录音状态。只读取 bounds/pid/alpha/layer 这类元数据，不需要屏幕录制权限。
+/// 即可判断会话是否存在。只读取 bounds/pid/alpha/layer 这类元数据，不需要屏幕录制权限。
 ///
 /// 胶囊在「录音 → 优化识别中」的整个工作周期内都在屏，形态会变：
 /// 旧版是 ~494x64pt 的大胶囊；2026-07 实测新版录音波形条缩小为 124x32pt@layer3，
-/// 结束录音后的「优化识别中」条更宽一些，识别结果上屏后才 order out。
+/// 结束录音后的「识别优化中」仍是胶囊，识别结果上屏后才 order out。
+/// 因此不能仅凭可见性区分录音和识别优化；启动前须先排除上一段会话的胶囊。
 enum DoubaoVoiceHUDDetector {
 
     static let imeBundleID = "com.bytedance.inputmethod.doubaoime"

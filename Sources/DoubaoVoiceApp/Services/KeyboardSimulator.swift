@@ -48,7 +48,11 @@ enum KeyboardSimulator {
     private static let optionReleaseRetryCount = 8
 
     private static var isTapInProgress = false
-    private static var pendingTapCompletions: [(() -> Void)?] = []
+    private struct PendingTap {
+        let shouldSend: () -> Bool
+        let completion: (Bool) -> Void
+    }
+    private static var pendingTaps: [PendingTap] = []
 
     private static let eventSource: CGEventSource? = {
         let source = CGEventSource(stateID: .combinedSessionState)
@@ -99,14 +103,20 @@ enum KeyboardSimulator {
 
     /// 单击左 Option：豆包语音的触发快捷键。
     static func tapLeftOption(completion: (() -> Void)? = nil) {
+        tapLeftOption(if: { true }) { _ in completion?() }
+    }
+
+    /// 排队及修饰键释放完成后，在真正按下前复查条件。取消时也回调（false），
+    /// 让调用方接管迟到的胶囊，不会把队列或语音切换卡在进行中。
+    static func tapLeftOption(if shouldSend: @escaping () -> Bool, completion: @escaping (Bool) -> Void) {
         if !Thread.isMainThread {
             DispatchQueue.main.async {
-                tapLeftOption(completion: completion)
+                tapLeftOption(if: shouldSend, completion: completion)
             }
             return
         }
 
-        pendingTapCompletions.append(completion)
+        pendingTaps.append(PendingTap(shouldSend: shouldSend, completion: completion))
         if isTapInProgress {
             Logger.shared.warn("左 Option 单击仍在发送中，已排队等待上一轮释放完成")
             return
@@ -116,27 +126,33 @@ enum KeyboardSimulator {
     }
 
     private static func runNextTap() {
-        guard !pendingTapCompletions.isEmpty else {
+        guard !pendingTaps.isEmpty else {
             isTapInProgress = false
             return
         }
 
         isTapInProgress = true
-        let completion = pendingTapCompletions.removeFirst()
+        let tap = pendingTaps.removeFirst()
 
         runWhenModifiersClear {
             ensureLeftOptionReleased {
-                performTap(completion: completion)
+                performTap(tap)
             }
         }
     }
 
-    private static func performTap(completion: (() -> Void)?) {
+    private static func performTap(_ tap: PendingTap) {
         DispatchQueue.main.async {
+            guard tap.shouldSend() else {
+                Logger.shared.debug("左 Option 单击发送前条件已变化，跳过本次单击")
+                tap.completion(false)
+                DispatchQueue.main.async { runNextTap() }
+                return
+            }
             Logger.shared.debug("发送豆包语音快捷键：左 Option 单击")
             tapLeftOptionOnce {
                 ensureLeftOptionReleased {
-                    completion?()
+                    tap.completion(true)
                     DispatchQueue.main.async {
                         runNextTap()
                     }
