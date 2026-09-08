@@ -9,8 +9,9 @@ import Foundation
 /// 但 macism 式的「激活自己再切回去」会让前台 App 短暂失活，Electron 应用（如 Notion）
 /// 会因此丢掉输入框焦点，用户得重新点回输入框。
 /// 这里改用 `.nonactivatingPanel`：前台 App 全程保持 active，只有 key window 短暂换手到面板；
-/// 面板关闭后系统把 key window 还给前台 App，文本输入上下文重新激活时即拿到新输入源，
-/// 输入框焦点不丢。
+/// 面板关闭后系统把 key window 还给前台 App，文本输入上下文重新激活时即拿到新输入源。
+/// 此方式只用于激活应用的普通窗口：Notion 全局搜索等浮窗会在 resign key / blur 时
+/// 改变可见状态，即使随后归还 key window 也无法撤销，所以必须在创建面板前跳过。
 final class InputSourceActivationNudge {
 
     /// 能成为 key window 但绝不激活本 App 的面板。
@@ -52,7 +53,7 @@ final class InputSourceActivationNudge {
         perform(description: description, previousApp: previousApp, completion: completion)
     }
 
-    /// 无视 App 白名单强制执行一次焦点刷新。
+    /// 无视 App 白名单请求一次焦点刷新，仍遵守浮窗焦点保护。
     /// 用于「模拟按键已发出但豆包没反应」的补救场景：此时基本可以断定
     /// 前台 App 的输入上下文没跟上 TIS 切换，即使它不在白名单里也需要刷新。
     func performForced(
@@ -72,6 +73,14 @@ final class InputSourceActivationNudge {
         previousApp: NSRunningApplication?,
         completion: (() -> Void)?
     ) {
+        // 正在刷新时，AX 可能暂时落到本 App；沿用当前操作的完成回调，不能据此
+        // 重新判定输入目标。其他情况必须先过安全检查，不能先创建面板再恢复浮窗。
+        if !isRunning, let reason = focusRefreshSkipReason(for: previousApp) {
+            Logger.shared.debug("跳过输入源激活补丁: \(description), \(reason)")
+            completion?()
+            return
+        }
+
         if let completion = completion {
             completions.append(completion)
         }
@@ -81,7 +90,7 @@ final class InputSourceActivationNudge {
 
         let previousAppName = previousApp?.localizedName ?? "未知应用"
         let previousAppWasActive = previousApp?.isActive == true
-        Logger.shared.debug("输入源激活补丁开始: \(description), 前台应用: \(previousAppName)")
+        Logger.shared.debug("输入源激活补丁开始: \(description), 前台应用: \(previousAppName), 初始激活: \(previousAppWasActive)")
 
         guard let screen = NSScreen.main else {
             finish(
@@ -161,11 +170,43 @@ final class InputSourceActivationNudge {
         return InputSourceActivationNudgeSettings.bundleIDs.contains(bundleID)
     }
 
+    private func focusRefreshSkipReason(for app: NSRunningApplication?) -> String? {
+        guard let app = app, !isCurrentApp(app), !app.isTerminated else {
+            return "无法确认当前交互应用，保留现有焦点"
+        }
+
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        // AX 焦点归属与 App 的 active 状态不同。Notion 全局搜索在其他 App 上方
+        // 可以持有键盘焦点，但宿主仍是 inactive；此时任何 key window 换手都会
+        // 触发它的 blur 处理。该保护也适用于语音启动的强制刷新。
+        guard app.isActive, frontmostApp?.processIdentifier == app.processIdentifier else {
+            return "保护非激活浮窗: \(app.localizedName ?? "未知应用") (\(app.bundleIdentifier ?? "nil")), 前台应用: \(frontmostApp?.localizedName ?? "未知应用")"
+        }
+
+        // 浮窗也可能打开在同一 App 上方，单看进程是否 active 无法识别。
+        // Notion 搜索使用 always-on-top panel；在屏窗口按从前到后排列，只检查
+        // 当前交互 App 最前面的可见窗口，避免受其他 App 的候选词面板干扰。
+        if let windowInfos = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]],
+           let windowInfo = windowInfos.first(where: {
+               isVisibleInteractionWindow($0)
+                   && pid(from: $0[kCGWindowOwnerPID as String]) == app.processIdentifier
+           }),
+           let layer = int(from: windowInfo[kCGWindowLayer as String]),
+           layer > Int(CGWindowLevelForKey(.normalWindow)) {
+            return "保护置顶浮窗: \(app.localizedName ?? "未知应用") (\(app.bundleIdentifier ?? "nil")), 窗口层级: \(layer)"
+        }
+
+        return nil
+    }
+
     private func currentInteractionApplication() -> NSRunningApplication? {
         // Raycast 这类 key-thief 浮窗不会成为 NSWorkspace 的 frontmostApplication；
         // Notion 全局搜索同样会在 Finder 等前台 App 上方持有 AX 焦点，因此仍应
-        // 先以 AX 判断真正的输入目标。浮层宿主可能原本就不是 active App，焦点
-        // 刷新结束时是否需要恢复激活状态由 perform 记录的初始状态决定。
+        // 先以 AX 判断真正的输入目标，再由 perform 在创建面板前保护非激活或
+        // 置顶浮窗；仅限制刷新后的 activate 不足以阻止浮窗在失焦时关闭。
         if let focusedApp = accessibilityFocusedApplication(), !isCurrentApp(focusedApp) {
             return focusedApp
         }
