@@ -80,10 +80,15 @@ final class InputSourceActivationNudge {
         isRunning = true
 
         let previousAppName = previousApp?.localizedName ?? "未知应用"
+        let previousAppWasActive = previousApp?.isActive == true
         Logger.shared.debug("输入源激活补丁开始: \(description), 前台应用: \(previousAppName)")
 
         guard let screen = NSScreen.main else {
-            finish(previousApp: previousApp, description: description)
+            finish(
+                previousApp: previousApp,
+                previousAppWasActive: previousAppWasActive,
+                description: description
+            )
             return
         }
 
@@ -111,11 +116,19 @@ final class InputSourceActivationNudge {
         panel.makeKeyAndOrderFront(nil)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + keyWindowHoldDuration) { [weak self] in
-            self?.finish(previousApp: previousApp, description: description)
+            self?.finish(
+                previousApp: previousApp,
+                previousAppWasActive: previousAppWasActive,
+                description: description
+            )
         }
     }
 
-    private func finish(previousApp: NSRunningApplication?, description: String) {
+    private func finish(
+        previousApp: NSRunningApplication?,
+        previousAppWasActive: Bool,
+        description: String
+    ) {
         panel?.orderOut(nil)
         panel?.close()
         panel = nil
@@ -124,6 +137,7 @@ final class InputSourceActivationNudge {
         // 仅在它意外失活时才显式拉回，避免多余的激活动作再去碰它的焦点。
         let currentBundleID = Bundle.main.bundleIdentifier
         if let previousApp = previousApp,
+           previousAppWasActive,
            previousApp.bundleIdentifier != currentBundleID,
            !previousApp.isTerminated,
            !previousApp.isActive {
@@ -149,9 +163,9 @@ final class InputSourceActivationNudge {
 
     private func currentInteractionApplication() -> NSRunningApplication? {
         // Raycast 这类 key-thief 浮窗不会成为 NSWorkspace 的 frontmostApplication；
-        // 它打开在 Mira / Notion 上方时，优先信任 NSWorkspace 会误把底层 App 当成
-        // 输入目标，随后焦点刷新面板一接管 key window，浮窗就会因失焦而关闭。
-        // 因此这里必须先查系统真正的 AX 焦点，再用窗口顺序和前台 App 兜底。
+        // Notion 全局搜索同样会在 Finder 等前台 App 上方持有 AX 焦点，因此仍应
+        // 先以 AX 判断真正的输入目标。浮层宿主可能原本就不是 active App，焦点
+        // 刷新结束时是否需要恢复激活状态由 perform 记录的初始状态决定。
         if let focusedApp = accessibilityFocusedApplication(), !isCurrentApp(focusedApp) {
             return focusedApp
         }
