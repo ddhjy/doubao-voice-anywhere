@@ -7,12 +7,18 @@ struct GeneralSettingsPane: View {
     var body: some View {
         Form {
             Section {
+                Toggle("交给豆包输入法的全局语音处理", isOn: store.voiceHandledByDoubao)
                 LabeledContent("说话快捷键") {
                     HotkeyRecorder(store: store, target: .voice)
                 }
+                .disabled(store.voiceHandledByDoubao.wrappedValue)
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("按一下开始说话，再按一下结束。可以是组合键，也可以单独点一个修饰键（比如只点一下 ⌥）——单独点修饰键时，按住它配合别的键不会触发语音。")
+                    if store.voiceHandledByDoubao.wrappedValue {
+                        Text("本 App 不再接管说话快捷键，由豆包自己识别、自己切换和切回输入法，最稳定。请在豆包输入法设置里打开「全局语音」，并把语音快捷键设成你想用的键（比如 Fn）。说完后本 App 会把输入法切回你原来用的那个，说话时暂停媒体也仍然有效。")
+                    } else {
+                        Text("按一下开始说话，再按一下结束。可以是组合键，也可以单独点一个修饰键（比如只点一下 ⌥）——单独点修饰键时，按住它配合别的键不会触发语音。")
+                    }
                     if let warning = store.voiceHotkeyWarning {
                         SettingsWarning(text: warning)
                     }

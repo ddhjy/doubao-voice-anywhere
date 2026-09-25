@@ -19,6 +19,7 @@ enum GeneralSettings {
         static let englishName = "NormalEnglishKeyboardLayoutName"
         static let ctrlSpaceEnabled = "CtrlSpaceSwitchEnabled"
         static let pauseMediaDuringVoice = "PauseMediaDuringVoiceInput"
+        static let voiceHandledByDoubao = "VoiceHandledByDoubaoGlobalShortcut"
         static let voiceHotkeyKeyCode = "VoiceHotkeyKeyCode"
         static let voiceHotkeyModifiers = "VoiceHotkeyModifiers"
         static let cycleHotkeyKeyCode = "CycleInputSourceHotkeyKeyCode"
@@ -96,6 +97,21 @@ enum GeneralSettings {
         set {
             store(newValue, keyCodeKey: Key.cycleHotkeyKeyCode, modifiersKey: Key.cycleHotkeyModifiers)
             Logger.shared.info("轮换快捷键已设置为: \(newValue.displayString)")
+            postChanged()
+        }
+    }
+
+    /// 说话快捷键交给豆包输入法自带的「全局语音」处理（默认关闭，保持老行为）。
+    ///
+    /// 开启后本 App 既不拦截也不吞说话快捷键，不再切输入法、不再模拟 Option：
+    /// 豆包用自己的全局按键监听识别快捷键、自己切输入法、结束后自己切回。
+    /// 从外部模拟 Option 驱动豆包受它处理延迟影响，做不到稳定（见 AGENTS.md）。
+    static var voiceHandledByDoubao: Bool {
+        get {
+            UserDefaults.standard.object(forKey: Key.voiceHandledByDoubao) as? Bool ?? false
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Key.voiceHandledByDoubao)
             postChanged()
         }
     }

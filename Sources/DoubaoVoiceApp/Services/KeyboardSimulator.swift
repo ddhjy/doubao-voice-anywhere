@@ -44,12 +44,20 @@ enum KeyboardSimulator {
         | rawMaskDeviceRightAlternate
 
     private static let optionTapHoldDuration: TimeInterval = 0.05
+    /// 自适应按住：豆包把 Option 按下当作「长按说话」候选，抬起时录音面板若还没打开，
+    /// 就按「长按取消」处理，刚开的录音被掐掉；按住超过约 200ms 又会被当成长按，
+    /// 松开即停止。所以等豆包确认开始启动后再松开，并且绝不超过上限。
+    private static let adaptiveHoldPollInterval: TimeInterval = 0.01
+    private static let adaptiveHoldMinimum: TimeInterval = 0.04
+    private static let adaptiveHoldMaximum: TimeInterval = 0.17
     private static let optionReleaseSettleDuration: TimeInterval = 0.03
     private static let optionReleaseRetryCount = 8
 
     private static var isTapInProgress = false
     private struct PendingTap {
         let shouldSend: () -> Bool
+        /// 非 nil 时按住直到它返回 true（受最短 / 最长按住时长约束）。
+        let releaseWhen: (() -> Bool)?
         let completion: (Bool) -> Void
     }
     private static var pendingTaps: [PendingTap] = []
@@ -92,13 +100,28 @@ enum KeyboardSimulator {
         event.post(tap: .cghidEventTap)
     }
 
-    /// 模拟一次左 Option 的"轻按"：按下 -> 短暂保持 -> 抬起。
-    static func tapLeftOptionOnce(completion: (() -> Void)? = nil) {
+    /// 模拟一次左 Option 的"轻按"：按下 -> 保持 -> 抬起。
+    /// `releaseWhen` 为 nil 时固定按住 `optionTapHoldDuration`。
+    static func tapLeftOptionOnce(releaseWhen: (() -> Bool)? = nil, completion: (() -> Void)? = nil) {
         postLeftOption(isDown: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + optionTapHoldDuration) {
+        let release = {
             postLeftOption(isDown: false)
             confirmLeftOptionReleased(attemptsLeft: optionReleaseRetryCount, completion: completion)
         }
+        guard let releaseWhen = releaseWhen else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + optionTapHoldDuration, execute: release)
+            return
+        }
+        let pressedAt = ProcessInfo.processInfo.systemUptime
+        func poll() {
+            let held = ProcessInfo.processInfo.systemUptime - pressedAt
+            if held >= adaptiveHoldMaximum || (held >= adaptiveHoldMinimum && releaseWhen()) {
+                release()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + adaptiveHoldPollInterval, execute: poll)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + adaptiveHoldMinimum, execute: poll)
     }
 
     /// 单击左 Option：豆包语音的触发快捷键。
@@ -108,15 +131,19 @@ enum KeyboardSimulator {
 
     /// 排队及修饰键释放完成后，在真正按下前复查条件。取消时也回调（false），
     /// 让调用方接管迟到的胶囊，不会把队列或语音切换卡在进行中。
-    static func tapLeftOption(if shouldSend: @escaping () -> Bool, completion: @escaping (Bool) -> Void) {
+    static func tapLeftOption(
+        if shouldSend: @escaping () -> Bool,
+        releaseWhen: (() -> Bool)? = nil,
+        completion: @escaping (Bool) -> Void
+    ) {
         if !Thread.isMainThread {
             DispatchQueue.main.async {
-                tapLeftOption(if: shouldSend, completion: completion)
+                tapLeftOption(if: shouldSend, releaseWhen: releaseWhen, completion: completion)
             }
             return
         }
 
-        pendingTaps.append(PendingTap(shouldSend: shouldSend, completion: completion))
+        pendingTaps.append(PendingTap(shouldSend: shouldSend, releaseWhen: releaseWhen, completion: completion))
         if isTapInProgress {
             Logger.shared.warn("左 Option 单击仍在发送中，已排队等待上一轮释放完成")
             return
@@ -150,7 +177,7 @@ enum KeyboardSimulator {
                 return
             }
             Logger.shared.debug("发送豆包语音快捷键：左 Option 单击")
-            tapLeftOptionOnce {
+            tapLeftOptionOnce(releaseWhen: tap.releaseWhen) {
                 ensureLeftOptionReleased {
                     tap.completion(true)
                     DispatchQueue.main.async {

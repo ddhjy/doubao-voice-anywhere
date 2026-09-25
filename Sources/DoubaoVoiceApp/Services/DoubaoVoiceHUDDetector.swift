@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import IOKit.pwr_mgt
 
 /// 探测豆包语音 HUD（屏幕下方的胶囊）是否可见，判断语音会话是否仍在进行。
 ///
@@ -35,30 +36,24 @@ enum DoubaoVoiceHUDDetector {
         imePid() != nil
     }
 
-    /// 豆包输入法 App 的安装位置。优先问 Launch Services，找不到再扫常见路径。
-    static func imeAppURL() -> URL? {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: imeBundleID) {
-            return url
-        }
-        let fallbacks = [
-            "/Library/Input Methods/DoubaoIme.app",
-            "/Library/Input Methods/DoubaoIME.app",
-        ]
-        return fallbacks
-            .map { URL(fileURLWithPath: $0) }
-            .first { FileManager.default.fileExists(atPath: $0.path) }
-    }
-
-    /// 豆包进程有没有任意在屏窗口（含 ⌥ 角标这类小窗）。
-    /// 用来判断输入法是否已经挂到当前输入上下文，和「是否在录音」不是一回事。
-    /// 必须在主线程调用。
-    static func hasAnyOnscreenWindow() -> Bool {
+    /// 豆包是否正在进行语音识别（从收到启动单击到录音结束）。
+    ///
+    /// 豆包收到 Option 单击约 40ms 后就会创建名为「ASR Voice Input」的防熄屏电源断言，
+    /// 录音期间一直持有；启动半途放弃时 20-30ms 内就释放。它比胶囊（约 250ms）出现得早，
+    /// 用来区分「豆包正在慢慢启动，别再发键」和「这一击落空 / 被放弃，可以安全补发」。
+    /// 公开 API，不需要额外权限。必须在主线程调用。
+    static func isVoiceInputAssertionHeld() -> Bool {
         guard let pid = imePid() else { return false }
-        guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
-            as? [[String: Any]]
+        var assertions: Unmanaged<CFDictionary>?
+        guard IOPMCopyAssertionsByProcess(&assertions) == kIOReturnSuccess,
+              let byProcess = assertions?.takeRetainedValue() as? [NSNumber: [[String: Any]]]
         else { return false }
 
-        return infos.contains { windowOwnerPid($0) == pid }
+        return (byProcess[NSNumber(value: pid)] ?? []).contains { assertion in
+            let name = assertion[kIOPMAssertionNameKey as String] as? String ?? ""
+            return name.localizedCaseInsensitiveContains("ASR")
+                || name.localizedCaseInsensitiveContains("Voice")
+        }
     }
 
     /// 豆包语音胶囊当前是否在屏。找不到豆包输入法进程时返回 false。

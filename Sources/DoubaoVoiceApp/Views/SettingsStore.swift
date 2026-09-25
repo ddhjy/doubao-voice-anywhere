@@ -292,6 +292,16 @@ final class SettingsStore: ObservableObject {
     // 开关和下拉框直接读写服务层，不在本地留副本：写入后服务发通知回来，
     // 读到的还是同一个值，不会来回抖。同值写入一律短路，避免多发一轮通知。
 
+    var voiceHandledByDoubao: Binding<Bool> {
+        Binding(
+            get: { GeneralSettings.voiceHandledByDoubao },
+            set: { newValue in
+                guard newValue != GeneralSettings.voiceHandledByDoubao else { return }
+                GeneralSettings.voiceHandledByDoubao = newValue
+            }
+        )
+    }
+
     var pauseMediaDuringVoice: Binding<Bool> {
         Binding(
             get: { GeneralSettings.pauseMediaDuringVoice },
