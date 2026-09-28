@@ -4,7 +4,8 @@ import Foundation
 
 /// 主状态机：
 /// - 说话快捷键（默认 Fn 轻按）：启动/停止豆包语音
-/// - 轮换快捷键（默认 Ctrl+Space）：仅在日常中文输入法与日常英文键盘之间轮换
+/// - 轮换快捷键（默认 Ctrl+Space）：在用户挑选的输入源之间依次轮换
+///   （没挑过就是日常中文输入法 ↔ 日常英文键盘）
 ///
 /// 两个快捷键都可在设置里改（见 `Hotkey`），裸修饰键形态要求按下期间没配合
 /// 别的键才算一次轻按。
@@ -33,6 +34,19 @@ final class DoubaoVoiceController: EventTapDelegate {
         GeneralSettings.resolvedNormalEnglishKeyboardLayout()
     }
 
+    /// 参与轮换、且当前在系统里已启用的输入源，按系统输入源列表的顺序轮换。
+    /// 没挑过时沿用老行为：日常中文输入法 ↔ 日常英文键盘。少于两个时轮换不生效。
+    static func resolvedCycleInputSources() -> [InputSource] {
+        guard let ids = GeneralSettings.cycleInputSourceIDs else {
+            return [resolvedNormalChineseInputSource(), resolvedNormalEnglishLayout()].compactMap { $0 }
+        }
+        let wanted = Set(ids)
+        return InputSourceManager.enabledSelectableSources().filter {
+            guard let id = $0.sourceID else { return false }
+            return wanted.contains(id)
+        }
+    }
+
     // MARK: - 时间常量（单位：秒）
 
     /// 组合键 / 功能键按下即触发，给用户松开快捷键留出的最短时间；输入源准备与这段等待并行。
@@ -44,6 +58,8 @@ final class DoubaoVoiceController: EventTapDelegate {
     private let inputSourceColdStartTimeout: TimeInterval = 5.0
     private let inputSourcePollInterval: TimeInterval = 0.01
     private let inputMethodBridgeDelay: TimeInterval = 0.15
+    /// 轮换快捷键切到豆包后，这段时间内的切换通知都归这次手动切换（一次切换会来两三条通知）。
+    private let cycleSwitchNotificationWindow: TimeInterval = 1.0
     /// 胶囊探测未生效时，停止后到恢复输入法的固定延迟（老行为，兜底用）。
     private let restoreAfterVoiceStopDelay: TimeInterval = 1.0
 
@@ -96,6 +112,9 @@ final class DoubaoVoiceController: EventTapDelegate {
     private var previousInputSource: InputSource?
     private var sourceBeforeVoiceHotkey: InputSource?
     private var lastNonDoubaoInputSource: InputSource?
+    /// 轮换快捷键最近一次把输入法切成豆包的时间。这是用户主动切换，不是豆包全局语音在唤起自己，
+    /// 随后的切换通知不能据此安排「语音结束后切回」。
+    private var cycleSwitchedToDoubaoAt: Date?
     private var voiceTransitionInProgress: Bool = false
 
     // 以下状态只在事件监听线程访问（EventTapDelegate 回调都在该线程上）。
@@ -157,7 +176,7 @@ final class DoubaoVoiceController: EventTapDelegate {
     private struct HotkeySnapshot {
         var voice: Hotkey
         var cycle: Hotkey
-        /// 轮换拦截门：只有「开关开启 && 日常中文/英文输入源都可用」时才拦截，
+        /// 轮换拦截门：只有「开关开启 && 至少两个参与轮换的输入源可用」时才拦截，
         /// 否则透传给系统，避免把按键吞进一个注定失败的切换。
         var cycleInterceptionActive: Bool
         /// 设置窗口正在录制快捷键：全部透传。我们的 tap 挂在 headInsert，
@@ -293,9 +312,8 @@ final class DoubaoVoiceController: EventTapDelegate {
         let voice = GeneralSettings.voiceHotkey
         let cycle = GeneralSettings.cycleInputSourceHotkey
         let enabled = GeneralSettings.ctrlSpaceSwitchEnabled
-        let chinese = Self.resolvedNormalChineseInputSource()
-        let english = Self.resolvedNormalEnglishLayout()
-        let active = enabled && chinese != nil && english != nil
+        let members = Self.resolvedCycleInputSources()
+        let active = enabled && members.count >= 2
         let delegated = GeneralSettings.voiceHandledByDoubao
 
         hotkeyStateLock.lock()
@@ -318,11 +336,11 @@ final class DoubaoVoiceController: EventTapDelegate {
             Logger.shared.info("说话快捷键: \(voice.displayString)")
         }
         if active {
-            Logger.shared.info("\(cycle.displayString) 轮换已启用: \(chinese!.value) ↔ \(english!.value)")
+            Logger.shared.info("\(cycle.displayString) 轮换已启用: \(members.map(\.value).joined(separator: " → "))")
         } else if !enabled {
             Logger.shared.info("输入源轮换已在设置中关闭，\(cycle.displayString) 透传给系统")
         } else {
-            Logger.shared.warn("输入源轮换已自动停用（日常输入法不可用：中文=\(chinese?.value ?? "无") 英文=\(english?.value ?? "无")），\(cycle.displayString) 透传给系统")
+            Logger.shared.warn("输入源轮换已自动停用（可用的轮换输入源不足两个：\(members.map(\.value).joined(separator: "、"))），\(cycle.displayString) 透传给系统")
         }
     }
 
@@ -572,6 +590,10 @@ final class DoubaoVoiceController: EventTapDelegate {
     /// 从别的输入法切到豆包：多半是豆包全局语音在唤起自己，开始巡检。
     /// 用户手动切到豆包也会走到这里，但没有录音就不会切回（见巡检超时分支）。
     private func detectDoubaoGlobalVoiceSwitch() {
+        if let switchedAt = cycleSwitchedToDoubaoAt,
+           Date().timeIntervalSince(switchedAt) < cycleSwitchNotificationWindow {
+            return
+        }
         guard GeneralSettings.voiceHandledByDoubao, isDoubaoIMEActive(),
               globalVoiceWatchTimer == nil, restoreImeTimer == nil,
               let source = lastNonDoubaoInputSource
@@ -1287,10 +1309,13 @@ final class DoubaoVoiceController: EventTapDelegate {
         return InputSourceManager.selectMethod(byName: chinese.value)
     }
 
-    private func selectNormalEnglishKeyboardLayout() -> Bool {
-        guard let english = Self.resolvedNormalEnglishLayout() else { return false }
-        if let id = english.sourceID, InputSourceManager.selectSource(byID: id) { return true }
-        return InputSourceManager.selectLayout(byName: english.value)
+    /// 优先按 sourceID 切，找不到再按名称。
+    private func selectInputSource(_ target: InputSource) -> Bool {
+        if let id = target.sourceID, InputSourceManager.selectSource(byID: id) { return true }
+        switch target.kind {
+        case .method: return InputSourceManager.selectMethod(byName: target.value)
+        case .layout: return InputSourceManager.selectLayout(byName: target.value)
+        }
     }
 
     private func isDoubaoInputSource(_ source: InputSource?) -> Bool {
@@ -1339,15 +1364,11 @@ final class DoubaoVoiceController: EventTapDelegate {
             previousInputSource = nil
             return
         }
-        let ok: Bool
+        let ok = selectInputSource(target)
         switch target.kind {
         case .method:
-            ok = (target.sourceID.flatMap { InputSourceManager.selectSource(byID: $0) } ?? false)
-                || InputSourceManager.selectMethod(byName: target.value)
             Logger.shared.debug("恢复之前输入法 method: \(target.value)(\(target.sourceID ?? "nil")), 结果: \(ok)")
         case .layout:
-            ok = (target.sourceID.flatMap { InputSourceManager.selectSource(byID: $0) } ?? false)
-                || InputSourceManager.selectLayout(byName: target.value)
             Logger.shared.debug("恢复之前键盘布局 layout: \(target.value)(\(target.sourceID ?? "nil")), 结果: \(ok)")
         }
         previousInputSource = nil
@@ -1476,33 +1497,34 @@ final class DoubaoVoiceController: EventTapDelegate {
 
     private func toggleNormalInputSource() {
         // 拦截门开启才会走到这里；解析结果仍可能在拦截后一瞬间变化，做兜底检查。
-        guard let chinese = Self.resolvedNormalChineseInputSource(),
-              let english = Self.resolvedNormalEnglishLayout()
-        else {
-            Logger.shared.warn("输入源轮换: 日常输入源不可用，跳过本次切换")
+        let members = Self.resolvedCycleInputSources()
+        guard members.count >= 2 else {
+            Logger.shared.warn("输入源轮换: 可用的轮换输入源不足两个，跳过本次切换")
             refreshHotkeyGate()
             return
         }
 
-        let currentSourceID = InputSourceManager.currentSourceID()
-        let currentMethod = InputSourceManager.currentMethod()
-        let currentLayout = InputSourceManager.currentLayout()
-        Logger.shared.debug("输入源轮换: currentSourceID=\(currentSourceID ?? "nil"), currentMethod=\(currentMethod ?? "nil"), currentLayout=\(currentLayout ?? "nil")")
+        let current = InputSourceManager.nowSource()
+        Logger.shared.debug("输入源轮换: 当前 \(current?.value ?? "nil")(\(current?.sourceID ?? "nil"))")
 
-        let isDoubao = currentSourceID == Self.targetInputSourceID
-        let isNormalChinese = (chinese.sourceID != nil && currentSourceID == chinese.sourceID)
-            || currentMethod == chinese.value
-
-        if isDoubao || isNormalChinese {
-            let ok = selectNormalEnglishKeyboardLayout()
-            Logger.shared.debug("输入源轮换: 切换到英文键盘布局 \(english.value), 结果: \(ok)")
-            return
+        let target: InputSource
+        if let index = members.firstIndex(where: { isInputSourceActive($0) }) {
+            target = members[(index + 1) % members.count]
+        } else {
+            // 当前输入源不在轮换里（比如语音刚结束还停在豆包）：先去一个类型不同的，
+            // 老的「中文 ↔ 英文」配置下就是：输入法 → 英文键盘、别的键盘布局 → 中文输入法。
+            target = members.first { $0.kind != current?.kind } ?? members[0]
         }
 
-        let ok = selectNormalChineseInputMethod()
-        Logger.shared.debug("输入源轮换: 切换到中文输入法 \(chinese.value), 结果: \(ok)")
+        if isDoubaoInputSource(target) {
+            cycleSwitchedToDoubaoAt = Date()
+        }
+        let ok = selectInputSource(target)
+        Logger.shared.debug("输入源轮换: 切换到 \(target.value)(\(target.sourceID ?? "nil")), 结果: \(ok)")
+        // TIS 切换可能只改了菜单栏、输入框没跟上（CJKV 输入法的老问题，切出中文输入法时
+        // 输入框也可能还由它处理），两个方向都对白名单 App 刷新一次。
         if ok {
-            waitForNormalChineseInputMethod {}
+            waitForRestoredInputSource(target)
         }
     }
 

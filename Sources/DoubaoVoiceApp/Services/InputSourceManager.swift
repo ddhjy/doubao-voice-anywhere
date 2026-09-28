@@ -106,6 +106,11 @@ enum InputSourceManager {
 
     // MARK: - 枚举已启用的输入源（设置界面与配置解析用）
 
+    /// 已启用、可被用户选择的全部输入源（输入法 + 键盘布局），按系统列表顺序。
+    static func enabledSelectableSources() -> [InputSource] {
+        selectableEntries().map { $0.inputSource }
+    }
+
     /// 已启用、可被用户选择的输入法列表（与系统输入法切换器可见项一致）。
     static func enabledSelectableMethods() -> [InputSource] {
         selectableEntries().filter { $0.inputSource.kind == .method }.map { $0.inputSource }

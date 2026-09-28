@@ -23,6 +23,13 @@ final class SettingsStore: ObservableObject {
         var title: String { isEnabledInSystem ? name : "\(name)（未启用）" }
     }
 
+    /// 「参与轮换」里的一项：系统里已启用的一个输入源，以及它当前是否在轮换里。
+    struct CycleChoice: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let isOn: Bool
+    }
+
     struct CompatibilityApp: Identifiable, Hashable {
         /// bundle ID，同时作为列表的稳定身份。
         let id: String
@@ -58,6 +65,8 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var chineseChoices: [InputSourceChoice] = []
     @Published private(set) var englishChoices: [InputSourceChoice] = []
     @Published private(set) var inputSourceWarnings: [String] = []
+    @Published private(set) var cycleChoices: [CycleChoice] = []
+    @Published private(set) var cycleWarnings: [String] = []
     @Published private(set) var compatibilityApps: [CompatibilityApp] = []
     @Published private(set) var availableCompatibilityPresets: [InputSourceActivationNudgeSettings.Preset] = []
     @Published private(set) var launchAtLoginEnabled = false
@@ -66,7 +75,6 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var voiceHotkey = GeneralSettings.voiceHotkey
     @Published private(set) var cycleHotkey = GeneralSettings.cycleInputSourceHotkey
     @Published private(set) var voiceHotkeyWarning: String?
-    @Published private(set) var cycleHotkeyWarning: String?
     @Published private(set) var cycleSwitchEnabled = true
     @Published private(set) var recordingHotkeyTarget: HotkeyTarget?
 
@@ -147,9 +155,9 @@ final class SettingsStore: ObservableObject {
     func refresh() {
         refreshScheduled = false
 
+        // 豆包也可以当日常中文输入法：只用豆包打中文的人，轮换就是豆包 ↔ 英文键盘。
         chineseChoices = choices(
-            from: InputSourceManager.enabledSelectableMethods()
-                .filter { !($0.sourceID ?? "").hasPrefix(DoubaoVoiceHUDDetector.imeBundleID) },
+            from: InputSourceManager.enabledSelectableMethods(),
             configuredID: GeneralSettings.normalChineseInputSourceID,
             configuredName: GeneralSettings.normalChineseInputMethodName
         )
@@ -163,8 +171,13 @@ final class SettingsStore: ObservableObject {
         voiceHotkey = GeneralSettings.voiceHotkey
         cycleHotkey = GeneralSettings.cycleInputSourceHotkey
         voiceHotkeyWarning = Self.typingKeyWarning(for: voiceHotkey)
-        cycleHotkeyWarning = Self.typingKeyWarning(for: cycleHotkey)
         cycleSwitchEnabled = GeneralSettings.ctrlSpaceSwitchEnabled
+        let cycleIDs = Set(Self.effectiveCycleSourceIDs())
+        cycleChoices = InputSourceManager.enabledSelectableSources().compactMap { source in
+            guard let id = source.sourceID else { return nil }
+            return CycleChoice(id: id, name: source.value, isOn: cycleIDs.contains(id))
+        }
+        cycleWarnings = computeCycleWarnings()
 
         let compatibilityBundleIDs = InputSourceActivationNudgeSettings.bundleIDs
         compatibilityApps = compatibilityBundleIDs.sorted().map {
@@ -218,18 +231,41 @@ final class SettingsStore: ObservableObject {
             if let fallback = DoubaoVoiceController.resolvedNormalChineseInputSource() {
                 lines.append("配置的中文输入法未启用，暂时改用「\(fallback.value)」。")
             } else {
-                lines.append("系统里没有已启用的中文输入法，输入源轮换已自动暂停（按键交回系统）。")
+                lines.append("系统里没有已启用的中文输入法。")
             }
         }
         if !InputSourceManager.isSourceEnabled(id: GeneralSettings.normalEnglishKeyboardLayoutID) {
             if let fallback = DoubaoVoiceController.resolvedNormalEnglishLayout() {
                 lines.append("配置的英文键盘未启用，暂时改用「\(fallback.value)」。")
             } else {
-                lines.append("系统里没有已启用的键盘布局，输入源轮换已自动暂停（按键交回系统）。")
+                lines.append("系统里没有已启用的键盘布局。")
             }
         }
 
         return lines
+    }
+
+    private func computeCycleWarnings() -> [String] {
+        var lines: [String] = []
+        if let warning = Self.typingKeyWarning(for: cycleHotkey) {
+            lines.append(warning)
+        }
+        let members = DoubaoVoiceController.resolvedCycleInputSources()
+        if cycleSwitchEnabled, members.count < 2 {
+            lines.append("至少勾选两个已启用的输入源，轮换才会生效；现在 \(cycleHotkey.displayString) 交回系统处理。")
+        }
+        // 单独点 Shift 不能吞（吞了 Shift+字母 就废了），中文输入法照样会收到这一下。
+        let methods = members.filter { $0.kind == .method }.map { "「\($0.value)」" }
+        if cycleHotkey.bareModifier == .shift, !methods.isEmpty {
+            lines.append("单独按 ⇧ 时，\(methods.joined(separator: "")) 自己也会拿它切中英文模式。请在这些输入法的设置里关掉「Shift 切换中英文」，否则切过去后可能停在英文模式。")
+        }
+        return lines
+    }
+
+    /// 当前生效的轮换成员 ID：没挑过时就是解析出来的日常中文 / 英文两端。
+    private static func effectiveCycleSourceIDs() -> [String] {
+        GeneralSettings.cycleInputSourceIDs
+            ?? DoubaoVoiceController.resolvedCycleInputSources().compactMap(\.sourceID)
     }
 
     private static func typingKeyWarning(for hotkey: Hotkey) -> String? {
@@ -318,6 +354,23 @@ final class SettingsStore: ObservableObject {
             set: { newValue in
                 guard newValue != GeneralSettings.ctrlSpaceSwitchEnabled else { return }
                 GeneralSettings.ctrlSpaceSwitchEnabled = newValue
+            }
+        )
+    }
+
+    /// 某个输入源是否参与轮换。第一次勾选时才把老的「中文 ↔ 英文」默认值落盘。
+    func cycleMember(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { Self.effectiveCycleSourceIDs().contains(id) },
+            set: { isOn in
+                var ids = Self.effectiveCycleSourceIDs()
+                guard ids.contains(id) != isOn else { return }
+                if isOn {
+                    ids.append(id)
+                } else {
+                    ids.removeAll { $0 == id }
+                }
+                GeneralSettings.cycleInputSourceIDs = ids
             }
         )
     }

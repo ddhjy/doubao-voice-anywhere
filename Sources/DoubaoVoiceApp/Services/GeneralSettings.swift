@@ -6,7 +6,7 @@ import Foundation
 /// 默认值与项目早期的硬编码常量一致：老用户升级后行为不变。
 ///
 /// 「日常输入法」影响三处行为：
-///   1. 轮换快捷键在日常中文输入法 / 日常英文键盘布局之间轮换
+///   1. 没单独挑过「参与轮换的输入源」时，轮换快捷键在这两者之间轮换
 ///   2. 从英文键盘布局启动豆包语音时，先桥接到日常中文输入法
 ///   3. 语音结束后找不到「之前的输入源」时，恢复到日常中文输入法
 enum GeneralSettings {
@@ -24,6 +24,7 @@ enum GeneralSettings {
         static let voiceHotkeyModifiers = "VoiceHotkeyModifiers"
         static let cycleHotkeyKeyCode = "CycleInputSourceHotkeyKeyCode"
         static let cycleHotkeyModifiers = "CycleInputSourceHotkeyModifiers"
+        static let cycleSourceIDs = "CycleInputSourceIDs"
     }
 
     /// 与早期版本硬编码值一致的默认配置。
@@ -97,6 +98,19 @@ enum GeneralSettings {
         set {
             store(newValue, keyCodeKey: Key.cycleHotkeyKeyCode, modifiersKey: Key.cycleHotkeyModifiers)
             Logger.shared.info("轮换快捷键已设置为: \(newValue.displayString)")
+            postChanged()
+        }
+    }
+
+    /// 参与轮换的输入源 sourceID。nil 表示从没挑过，沿用老行为：日常中文输入法 ↔ 日常英文键盘。
+    /// 系统里暂时停用的也留着，重新启用后自动回到轮换里。
+    static var cycleInputSourceIDs: [String]? {
+        get {
+            UserDefaults.standard.stringArray(forKey: Key.cycleSourceIDs)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Key.cycleSourceIDs)
+            Logger.shared.info("参与轮换的输入源已设置为: \((newValue ?? []).joined(separator: ", "))")
             postChanged()
         }
     }

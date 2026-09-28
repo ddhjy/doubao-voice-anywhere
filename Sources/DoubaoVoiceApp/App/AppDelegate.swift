@@ -294,10 +294,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let cycleHotkey = GeneralSettings.cycleInputSourceHotkey.displayString
         let cycleLine: String
-        if GeneralSettings.ctrlSpaceSwitchEnabled,
-           let chinese = DoubaoVoiceController.resolvedNormalChineseInputSource(),
-           let english = DoubaoVoiceController.resolvedNormalEnglishLayout() {
-            cycleLine = "按 \(cycleHotkey)：在「\(chinese.value)」和「\(english.value)」之间轮换，不会切到豆包。"
+        let cycleMembers = DoubaoVoiceController.resolvedCycleInputSources()
+        if GeneralSettings.ctrlSpaceSwitchEnabled, cycleMembers.count >= 2 {
+            let names = cycleMembers.map { "「\($0.value)」" }.joined()
+            cycleLine = "按 \(cycleHotkey)：在\(names)之间轮换。"
         } else {
             cycleLine = "输入源轮换当前未启用，可在「设置…」里开启。"
         }

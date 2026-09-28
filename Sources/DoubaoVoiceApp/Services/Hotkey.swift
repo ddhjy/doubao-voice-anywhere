@@ -105,7 +105,15 @@ struct Hotkey: Equatable, CustomStringConvertible {
     /// keyDown 形态的匹配。裸修饰键走 flagsChanged，这里恒为 false。
     func matchesKeyDown(keyCode: Int64, flags: CGEventFlags) -> Bool {
         guard !isBareModifier, keyCode == self.keyCode else { return false }
-        return flags.intersection(Self.significantModifierMask) == modifiers
+        var eventModifiers = flags.intersection(Self.significantModifierMask)
+        var expected = modifiers
+        // 功能键（F1–F20、Help）的 keyDown 由系统自动带上 Fn 位，不代表用户按了 Fn；
+        // Karabiner 等改键工具发出的 F19 是否带这一位也不一定，两边都忽略它。
+        if Self.safeBareKeyCodes.contains(keyCode) {
+            eventModifiers.remove(.maskSecondaryFn)
+            expected.remove(.maskSecondaryFn)
+        }
+        return eventModifiers == expected
     }
 
     /// 这条 flagsChanged 是不是本快捷键那个修饰键发出来的（左右都算）。
