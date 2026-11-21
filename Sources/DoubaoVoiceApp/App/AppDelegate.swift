@@ -54,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         eventTap.delegate = voiceController
         voiceController.setUp()
+        voiceController.nativeFnMonitoringChanged = { [weak self] in
+            guard let self else { return }
+            if !self.startEventTapWithRetry() { self.scheduleEventTapRetry() }
+        }
 
         // 第一次询问；如果用户尚未授予权限，CGEventTap 会创建失败，我们后续轮询。
         let trusted = PermissionManager.ensureAccessibility(prompt: true)
@@ -233,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - 监听重试
 
     private func startEventTapWithRetry() -> Bool {
-        if eventTap.start() {
+        if eventTap.start() && voiceController.updateNativeFnMonitoring() {
             permissionRetryTimer?.invalidate()
             permissionRetryTimer = nil
             return true
@@ -276,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func restartTap(_ sender: Any?) {
         eventTap.stop()
+        voiceController.stopNativeFnMonitoring()
         if !startEventTapWithRetry() {
             Logger.shared.warn("重启事件监听失败，请检查辅助功能权限")
             scheduleEventTapRetry()

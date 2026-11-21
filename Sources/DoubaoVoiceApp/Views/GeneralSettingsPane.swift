@@ -12,12 +12,23 @@ struct GeneralSettingsPane: View {
                     HotkeyRecorder(store: store, target: .voice)
                 }
                 .disabled(store.voiceHandledByDoubao.wrappedValue)
+                if !store.voiceHandledByDoubao.wrappedValue {
+                    Picker("豆包免按模式快捷键", selection: store.voiceOptionKey) {
+                        Text(VoiceOptionKey.left.label).tag(VoiceOptionKey.left)
+                        Text(VoiceOptionKey.right.label).tag(VoiceOptionKey.right)
+                    }
+                    if store.voiceHotkey.bareModifier == .fn {
+                        Toggle("用 Fn 触发豆包原生识别优化", isOn: store.nativeFnStop)
+                    }
+                }
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
                     if store.voiceHandledByDoubao.wrappedValue {
-                        Text("本 App 不再接管说话快捷键，由豆包自己识别、自己切换和切回输入法，最稳定。请在豆包输入法设置里打开「全局语音」，并把语音快捷键设成你想用的键（比如 Fn）。说完后本 App 会把输入法切回你原来用的那个，说话时暂停媒体也仍然有效。")
+                        Text("由豆包的「全局唤起语音」处理说话快捷键。它可能先经过上一个输入法，再切到豆包。说完后会恢复打字时的输入法。")
+                    } else if store.voiceHotkey.bareModifier == .fn && store.nativeFnStop.wrappedValue {
+                        Text("在豆包「语音输入」里把「长按模式」设为 Fn，「免按模式」设为这里选的 Option 键。轻按 Fn 开始，再按 Fn 由豆包整理文字。Option 也能照常单击。")
                     } else {
-                        Text("按一下开始说话，再按一下结束。可以是组合键，也可以单独点一个修饰键（比如只点一下 ⌥）——单独点修饰键时，按住它配合别的键不会触发语音。")
+                        Text("按说话快捷键直接切到豆包。请把豆包的「免按模式」设为这里选的 Option 键，并让豆包的长按和免按快捷键都与说话快捷键错开。")
                     }
                     if let warning = store.voiceHotkeyWarning {
                         SettingsWarning(text: warning)

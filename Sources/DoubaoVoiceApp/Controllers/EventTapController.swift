@@ -24,6 +24,11 @@ protocol EventTapDelegate: AnyObject {
 final class EventTapController {
 
     weak var delegate: EventTapDelegate?
+    private let listenOnlyAtHID: Bool
+
+    init(listenOnlyAtHID: Bool = false) {
+        self.listenOnlyAtHID = listenOnlyAtHID
+    }
 
     private let stateLock = NSLock()
     private var eventTap: CFMachPort?
@@ -111,9 +116,9 @@ final class EventTapController {
         let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
+            tap: listenOnlyAtHID ? .cghidEventTap : .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .defaultTap,
+            options: listenOnlyAtHID ? .listenOnly : .defaultTap,
             eventsOfInterest: mask,
             callback: EventTapController.callback,
             userInfo: opaqueSelf
@@ -144,7 +149,7 @@ final class EventTapController {
         watchdogTimer = timer
         stateLock.unlock()
 
-        Logger.shared.info("EventTap 已启动（独立线程，监听 flagsChanged + keyDown + mouseDown，看门狗 \(Int(Self.watchdogInterval))s）")
+        Logger.shared.info(listenOnlyAtHID ? "豆包原生 Fn 轻按观察已启动" : "EventTap 已启动（独立线程，监听 flagsChanged + keyDown + mouseDown，看门狗 \(Int(Self.watchdogInterval))s）")
         return true
     }
 

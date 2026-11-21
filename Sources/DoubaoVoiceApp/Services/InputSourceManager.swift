@@ -40,16 +40,9 @@ enum InputSourceManager {
         return string(of: src, key: kTISPropertyLocalizedName)
     }
 
-    /// 当前输入源的统一描述：优先返回 method，其次 layout。
+    /// 从同一个 TIS 对象读取 ID、名称和类型，避免快速切换时拼出两个输入源的属性。
     static func nowSource() -> InputSource? {
-        let sourceID = currentSourceID()
-        if let method = currentMethod() {
-            return InputSource(kind: .method, value: method, sourceID: sourceID)
-        }
-        if let layout = currentLayout() {
-            return InputSource(kind: .layout, value: layout, sourceID: sourceID)
-        }
-        return nil
+        currentKeyboardInputSource().flatMap(describe)
     }
 
     /// 当前输入源是否需要通过短暂焦点切换来让前台 App 真正刷新输入上下文。
@@ -191,25 +184,26 @@ enum InputSourceManager {
                   category == (kTISCategoryKeyboardInputSource as String),
                   bool(of: src, key: kTISPropertyInputSourceIsSelectCapable),
                   bool(of: src, key: kTISPropertyInputSourceIsEnabled),
-                  let type = string(of: src, key: kTISPropertyInputSourceType),
-                  let name = string(of: src, key: kTISPropertyLocalizedName)
+                  let inputSource = describe(src)
             else { return nil }
-
-            let kind: InputSource.Kind
-            if type == (kTISTypeKeyboardLayout as String) {
-                kind = .layout
-            } else if isMethodType(type) {
-                kind = .method
-            } else {
-                return nil
-            }
-
-            let id = string(of: src, key: kTISPropertyInputSourceID)
-            return SourceEntry(
-                source: src,
-                inputSource: InputSource(kind: kind, value: name, sourceID: id)
-            )
+            return SourceEntry(source: src, inputSource: inputSource)
         }
+    }
+
+    private static func describe(_ src: TISInputSource) -> InputSource? {
+        guard let type = string(of: src, key: kTISPropertyInputSourceType),
+              let name = string(of: src, key: kTISPropertyLocalizedName)
+        else { return nil }
+
+        let kind: InputSource.Kind
+        if type == (kTISTypeKeyboardLayout as String) {
+            kind = .layout
+        } else if isMethodType(type) {
+            kind = .method
+        } else {
+            return nil
+        }
+        return InputSource(kind: kind, value: name, sourceID: string(of: src, key: kTISPropertyInputSourceID))
     }
 
     private static func enabledInputSources() -> [TISInputSource]? {

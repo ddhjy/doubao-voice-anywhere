@@ -7,7 +7,8 @@ import Foundation
 ///   - 组合键（`⌃Space`）：修饰键 + 普通键，走 keyDown，按下即触发并吞掉按键。
 ///   - 裸普通键（`F13`）：走 keyDown，按下即触发并吞掉按键。
 ///   - 裸修饰键（单独点一下 `⌥`）：走 flagsChanged，抬起时才触发，且要求按下
-///     期间没配合别的键或鼠标。除 Fn 外一律不吞——吞了 `⌥C` 这类组合就废了。
+///     期间没配合别的输入（细则见 `BareModifierTapTracker`）。除 Fn 外一律不吞——
+///     吞了 `⌥C` 这类组合就废了。
 ///
 /// 修饰键不分左右：左右 Option 归一到同一个键码，用户随手点哪边都算。
 struct Hotkey: Equatable, CustomStringConvertible {
@@ -173,4 +174,73 @@ struct Hotkey: Equatable, CustomStringConvertible {
         64, 79, 80, 90, 96, 97, 98, 99, 100, 101, 103, 105, 106, 107, 109, 111, 113,
         114, 118, 120, 122,
     ]
+}
+
+/// 裸修饰键「单独点一下」的判定。只在事件监听线程上用。
+///
+/// 按下期间来了别的键、鼠标或别的修饰键，就不算轻按。⌃⌥⇧⌘ 这些不吞的修饰键平时
+/// 就是组合键的一部分，所以还多两条：
+///   - 按下那一刻已经按着别的修饰键（`⌘⇧4`，或 Karabiner 把一个键映射成 `⌃⌥⇧`
+///     的 hyper——它每敲一次都会带出一组修饰键的按下 / 抬起，中间没有任何 keyDown）。
+///   - 按住超过 `maxPassthroughHold`。滚轮、触控板手势不经过事件监听，
+///     「按着 ⇧ 横向滚动」只能靠时长排除。
+/// Fn 是独占键，不受这两条限制，判定与改造前一致。
+struct BareModifierTapTracker {
+
+    enum Edge {
+        case none
+        case pressed
+        /// 抬起，且是一次干净的轻按。
+        case tapped
+        /// 抬起，但这一次不算轻按。
+        case cancelled
+    }
+
+    static let maxPassthroughHold: TimeInterval = 1.0
+
+    /// 判断「别的修饰键」时不看 Fn：系统里偶尔会残留一个幽灵 Fn 位，
+    /// 把它算进来会让 ⇧ 这类轻按整个失灵。
+    private static let companionModifierMask: CGEventFlags = [
+        .maskCommand, .maskAlternate, .maskControl, .maskShift,
+    ]
+
+    private(set) var isDown = false
+    private var usedWithOtherInput = false
+    private var pressedAt: TimeInterval = 0
+
+    mutating func reset() {
+        isDown = false
+        usedWithOtherInput = false
+        pressedAt = 0
+    }
+
+    /// 喂一条属于 `hotkey` 那个修饰键的 flagsChanged（调用前先用 `matchesModifierKeyCode` 判断）。
+    mutating func update(hotkey: Hotkey, flags: CGEventFlags, at now: TimeInterval) -> Edge {
+        guard let modifier = hotkey.bareModifier else { return .none }
+        let pressed = hotkey.modifierIsPressed(in: flags)
+
+        if pressed && !isDown {
+            isDown = true
+            pressedAt = now
+            let companions = flags.intersection(Self.companionModifierMask).subtracting(modifier.flag)
+            usedWithOtherInput = !hotkey.swallowsEvent && !companions.isEmpty
+            return .pressed
+        }
+        if !pressed && isDown {
+            let heldTooLong = !hotkey.swallowsEvent && now - pressedAt > Self.maxPassthroughHold
+            let clean = !usedWithOtherInput && !heldTooLong
+            reset()
+            return clean ? .tapped : .cancelled
+        }
+        // 已经按着，又来一条「按下」：左右两个同名修饰键一起按了，不是轻按。
+        if pressed && isDown && !hotkey.swallowsEvent {
+            usedWithOtherInput = true
+        }
+        return .none
+    }
+
+    /// 按着的时候来了别的输入：这一次不算轻按了。
+    mutating func markUsedWithOtherInput() {
+        if isDown { usedWithOtherInput = true }
+    }
 }

@@ -1,14 +1,17 @@
 import CoreGraphics
 import Foundation
 
-/// 模拟键盘事件。当前仅需要"左 Option 单击"，对应豆包语音的触发方式。
-///
-/// 关键点：左 Option 本身是修饰键，要发送带 `deviceLeftAlternate` 的 `flagsChanged`。
-/// 抬起后必须等系统确认 Option 已清掉，再继续下一次触发。
-enum KeyboardSimulator {
+/// 豆包「免按模式」绑定的 Option 键。左右两侧的虚拟键码和设备修饰位不同。
+enum VoiceOptionKey: Int {
+    case left = 58
+    case right = 61
 
-    /// macOS 虚拟键码：左 Option。
-    static let leftOptionKeyCode: CGKeyCode = 58
+    var label: String { self == .left ? "左 Option" : "右 Option" }
+    fileprivate var deviceMask: UInt64 { self == .left ? 0x20 : 0x40 }
+}
+
+/// 单击会话开始时选定的 Option 键，抬起后核对同一侧的修饰键状态。
+enum KeyboardSimulator {
 
     /// 合成事件的自识别标记（"DVAP"）。
     ///
@@ -16,32 +19,15 @@ enum KeyboardSimulator {
     /// 设成单独点 Option，这一击就会被当成用户按键，触发语音又发一击，来回递归。
     /// 打上标记，事件回调认出来直接透传。
     private static let syntheticMarker: Int64 = 0x4456_4150
+    private static let foreignModifiers: CGEventFlags = [
+        .maskCommand, .maskShift, .maskControl, .maskSecondaryFn, .maskAlphaShift,
+        .maskNumericPad, .maskHelp,
+    ]
 
     /// 是不是本 App 自己合成的事件。
     static func isSynthetic(_ event: CGEvent) -> Bool {
         event.getIntegerValueField(.eventSourceUserData) == syntheticMarker
     }
-
-    // 与 NXEvent 的位掩码对齐（参见 IOKit/hidsystem/IOLLEvent.h）。
-    private static let rawMaskDeviceLeftAlternate: UInt64 = 0x0000_0020
-    private static let rawMaskDeviceRightAlternate: UInt64 = 0x0000_0040
-
-    /// 一次「左 Option 单击」上不该出现的所有修饰键位，含设备相关位。
-    private static let foreignModifierMask: UInt64 =
-        CGEventFlags.maskCommand.rawValue
-        | CGEventFlags.maskShift.rawValue
-        | CGEventFlags.maskControl.rawValue
-        | CGEventFlags.maskSecondaryFn.rawValue
-        | CGEventFlags.maskAlphaShift.rawValue
-        | CGEventFlags.maskNumericPad.rawValue
-        | CGEventFlags.maskHelp.rawValue
-        | 0x0000_0001 // 左 Control
-        | 0x0000_0002 // 左 Shift
-        | 0x0000_0004 // 右 Shift
-        | 0x0000_0008 // 左 Command
-        | 0x0000_0010 // 右 Command
-        | 0x0000_2000 // 右 Control
-        | rawMaskDeviceRightAlternate
 
     private static let optionTapHoldDuration: TimeInterval = 0.05
     /// 自适应按住：豆包把 Option 按下当作「长按说话」候选，抬起时录音面板若还没打开，
@@ -55,6 +41,7 @@ enum KeyboardSimulator {
 
     private static var isTapInProgress = false
     private struct PendingTap {
+        let key: VoiceOptionKey
         let shouldSend: () -> Bool
         /// 非 nil 时按住直到它返回 true（受最短 / 最长按住时长约束）。
         let releaseWhen: (() -> Bool)?
@@ -68,45 +55,33 @@ enum KeyboardSimulator {
         return source
     }()
 
-    /// 发送一次左 Option 的 flagsChanged 事件。`isDown` 为 true 表示按下、false 表示抬起。
-    static func postLeftOption(isDown: Bool) {
+    /// 明确指定按键的左右侧与按下状态，避免会话中残留的 Fn 等修饰键混入事件。
+    private static func postOption(_ key: VoiceOptionKey, isDown: Bool) {
         guard let event = CGEvent(
             keyboardEventSource: eventSource,
-            virtualKey: leftOptionKeyCode,
+            virtualKey: CGKeyCode(key.rawValue),
             keyDown: isDown
         ) else {
-            Logger.shared.error("无法创建 CGEvent for left Option")
+            Logger.shared.error("无法创建豆包语音按键事件")
             return
         }
 
-        if event.type != .flagsChanged {
-            event.type = .flagsChanged
-        }
-
+        event.type = .flagsChanged
         event.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
-
-        // CGEvent 会把 eventSource 当前的修饰键状态一并写进新事件。系统里只要残留一个
-        // 幽灵修饰键（Fn 卡住最常见，录屏软件、外接键盘、被吞掉的 keyUp 都可能留下），
-        // 豆包收到的就不是干净的「左 Option」而是「Fn+左 Option」，直接忽略——
-        // 表现为快捷键连续多次失灵，直到用户真按一次 Ctrl+Space 才恢复。
-        // 剥掉这些无关位，只保留 CGEvent 自己算出来的 Option 位，
-        // 干净环境下事件形态与从前完全一致。
-        let inherited = event.flags.rawValue
-        if inherited & foreignModifierMask != 0 {
-            Logger.shared.warn("合成单击带上了无关修饰键（flags=\(formatFlags(inherited))，多半是卡住的幽灵修饰键），已剥掉再发送")
-            event.flags = CGEventFlags(rawValue: inherited & ~foreignModifierMask)
+        if !event.flags.intersection(foreignModifiers).isEmpty {
+            Logger.shared.warn("合成单击带上了无关修饰键（flags=\(formatFlags(event.flags.rawValue))），已清除")
         }
-
+        event.flags = isDown ? CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | key.deviceMask) : []
         event.post(tap: .cghidEventTap)
     }
 
-    /// 模拟一次左 Option 的"轻按"：按下 -> 保持 -> 抬起。
+    /// 模拟一次 Option 的"轻按"：按下 -> 保持 -> 抬起。
     /// `releaseWhen` 为 nil 时固定按住 `optionTapHoldDuration`。
-    static func tapLeftOptionOnce(releaseWhen: (() -> Bool)? = nil, completion: (() -> Void)? = nil) {
-        postLeftOption(isDown: true)
+    private static func tapOptionOnce(_ key: VoiceOptionKey, releaseWhen: (() -> Bool)? = nil, completion: (() -> Void)? = nil) {
+        postOption(key, isDown: true)
         let release = {
-            postLeftOption(isDown: false)
-            confirmLeftOptionReleased(attemptsLeft: optionReleaseRetryCount, completion: completion)
+            postOption(key, isDown: false)
+            confirmOptionReleased(key, attemptsLeft: optionReleaseRetryCount, completion: completion)
         }
         guard let releaseWhen = releaseWhen else {
             DispatchQueue.main.asyncAfter(deadline: .now() + optionTapHoldDuration, execute: release)
@@ -124,28 +99,24 @@ enum KeyboardSimulator {
         DispatchQueue.main.asyncAfter(deadline: .now() + adaptiveHoldMinimum, execute: poll)
     }
 
-    /// 单击左 Option：豆包语音的触发快捷键。
-    static func tapLeftOption(completion: (() -> Void)? = nil) {
-        tapLeftOption(if: { true }) { _ in completion?() }
-    }
-
     /// 排队及修饰键释放完成后，在真正按下前复查条件。取消时也回调（false），
     /// 让调用方接管迟到的胶囊，不会把队列或语音切换卡在进行中。
-    static func tapLeftOption(
+    static func tapOption(
+        _ key: VoiceOptionKey,
         if shouldSend: @escaping () -> Bool,
         releaseWhen: (() -> Bool)? = nil,
         completion: @escaping (Bool) -> Void
     ) {
         if !Thread.isMainThread {
             DispatchQueue.main.async {
-                tapLeftOption(if: shouldSend, releaseWhen: releaseWhen, completion: completion)
+                tapOption(key, if: shouldSend, releaseWhen: releaseWhen, completion: completion)
             }
             return
         }
 
-        pendingTaps.append(PendingTap(shouldSend: shouldSend, releaseWhen: releaseWhen, completion: completion))
+        pendingTaps.append(PendingTap(key: key, shouldSend: shouldSend, releaseWhen: releaseWhen, completion: completion))
         if isTapInProgress {
-            Logger.shared.warn("左 Option 单击仍在发送中，已排队等待上一轮释放完成")
+            Logger.shared.warn("语音单击仍在发送中，已排队等待上一轮释放完成")
             return
         }
 
@@ -162,7 +133,7 @@ enum KeyboardSimulator {
         let tap = pendingTaps.removeFirst()
 
         runWhenModifiersClear {
-            ensureLeftOptionReleased {
+            ensureOptionReleased(tap.key) {
                 performTap(tap)
             }
         }
@@ -171,14 +142,14 @@ enum KeyboardSimulator {
     private static func performTap(_ tap: PendingTap) {
         DispatchQueue.main.async {
             guard tap.shouldSend() else {
-                Logger.shared.debug("左 Option 单击发送前条件已变化，跳过本次单击")
+                Logger.shared.debug("语音单击发送前条件已变化，跳过本次单击")
                 tap.completion(false)
                 DispatchQueue.main.async { runNextTap() }
                 return
             }
-            Logger.shared.debug("发送豆包语音快捷键：左 Option 单击")
-            tapLeftOptionOnce(releaseWhen: tap.releaseWhen) {
-                ensureLeftOptionReleased {
+            Logger.shared.debug("发送豆包语音快捷键：\(tap.key.label) 单击")
+            tapOptionOnce(tap.key, releaseWhen: tap.releaseWhen) {
+                ensureOptionReleased(tap.key) {
                     tap.completion(true)
                     DispatchQueue.main.async {
                         runNextTap()
@@ -188,45 +159,45 @@ enum KeyboardSimulator {
         }
     }
 
-    private static func ensureLeftOptionReleased(completion: (() -> Void)? = nil) {
-        if leftOptionAppearsPressed() {
-            postLeftOption(isDown: false)
+    private static func ensureOptionReleased(_ key: VoiceOptionKey, completion: (() -> Void)? = nil) {
+        if optionAppearsPressed(key) {
+            postOption(key, isDown: false)
         }
-        confirmLeftOptionReleased(attemptsLeft: optionReleaseRetryCount, completion: completion)
+        confirmOptionReleased(key, attemptsLeft: optionReleaseRetryCount, completion: completion)
     }
 
-    private static func confirmLeftOptionReleased(attemptsLeft: Int, completion: (() -> Void)? = nil) {
+    private static func confirmOptionReleased(_ key: VoiceOptionKey, attemptsLeft: Int, completion: (() -> Void)? = nil) {
         DispatchQueue.main.asyncAfter(deadline: .now() + optionReleaseSettleDuration) {
-            if leftOptionAppearsPressed() {
-                Logger.shared.warn("检测到左 Option 仍处于按下状态，补发抬起事件，flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
-                postLeftOption(isDown: false)
+            if optionAppearsPressed(key) {
+                Logger.shared.warn("检测到\(key.label) 仍处于按下状态，补发抬起事件，flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
+                postOption(key, isDown: false)
                 if attemptsLeft > 1 {
-                    confirmLeftOptionReleased(attemptsLeft: attemptsLeft - 1, completion: completion)
+                    confirmOptionReleased(key, attemptsLeft: attemptsLeft - 1, completion: completion)
                     return
                 }
-                Logger.shared.error("多次补发后左 Option 仍未释放，flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
+                Logger.shared.error("多次补发后\(key.label) 仍未释放，flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
             }
             completion?()
         }
     }
 
-    private static func leftOptionAppearsPressed() -> Bool {
-        if CGEventSource.keyState(.hidSystemState, key: leftOptionKeyCode)
-            || CGEventSource.keyState(.combinedSessionState, key: leftOptionKeyCode)
+    private static func optionAppearsPressed(_ key: VoiceOptionKey) -> Bool {
+        if CGEventSource.keyState(.hidSystemState, key: CGKeyCode(key.rawValue))
+            || CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(key.rawValue))
         {
             return true
         }
 
-        return leftOptionAppearsPressed(in: CGEventSource.flagsState(.hidSystemState))
-            || leftOptionAppearsPressed(in: CGEventSource.flagsState(.combinedSessionState))
+        return optionAppearsPressed(key, in: CGEventSource.flagsState(.hidSystemState))
+            || optionAppearsPressed(key, in: CGEventSource.flagsState(.combinedSessionState))
     }
 
-    private static func leftOptionAppearsPressed(in flags: CGEventFlags) -> Bool {
+    private static func optionAppearsPressed(_ key: VoiceOptionKey, in flags: CGEventFlags) -> Bool {
         let rawFlags = flags.rawValue
-        if rawFlags & rawMaskDeviceLeftAlternate != 0 {
+        if rawFlags & key.deviceMask != 0 {
             return true
         }
-        if rawFlags & rawMaskDeviceRightAlternate != 0 {
+        if rawFlags & (VoiceOptionKey.left.deviceMask | VoiceOptionKey.right.deviceMask) != 0 {
             return false
         }
         return flags.contains(.maskAlternate)
@@ -237,14 +208,14 @@ enum KeyboardSimulator {
     /// 等到当前所有修饰键都松开再执行 `block`，防止真实按下的 Fn / Ctrl 干扰单击 Option。
     ///
     /// 超时后仍然发送：卡住的多半是幽灵修饰键（键早就松了、状态没清），死等只会让快捷键
-    /// 彻底失灵。`postLeftOption` 会把无关修饰键从事件里剥掉，脏状态污染不到这一击。
+    /// 彻底失灵。`postOption` 会把无关修饰键从事件里剥掉，脏状态污染不到这一击。
     static func runWhenModifiersClear(attemptsLeft: Int = 30, _ block: @escaping () -> Void) {
         if modifiersAreClear() {
             block()
             return
         }
         if attemptsLeft <= 0 {
-            Logger.shared.warn("等待修饰键释放超时（可能是卡住的幽灵修饰键），仍按干净的左 Option 发送，当前 flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
+            Logger.shared.warn("等待修饰键释放超时（可能是卡住的幽灵修饰键），仍按干净的 Option 发送，当前 flags=\(formatFlags(CGEventSource.flagsState(.combinedSessionState).rawValue))")
             block()
             return
         }

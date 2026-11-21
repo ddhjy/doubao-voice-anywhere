@@ -5,10 +5,9 @@ import Foundation
 ///
 /// 默认值与项目早期的硬编码常量一致：老用户升级后行为不变。
 ///
-/// 「日常输入法」影响三处行为：
+/// 「日常输入法」影响两处行为：
 ///   1. 没单独挑过「参与轮换的输入源」时，轮换快捷键在这两者之间轮换
-///   2. 从英文键盘布局启动豆包语音时，先桥接到日常中文输入法
-///   3. 语音结束后找不到「之前的输入源」时，恢复到日常中文输入法
+///   2. 语音结束后找不到「之前的输入源」时，恢复到日常中文输入法
 enum GeneralSettings {
     static let changedNotification = Notification.Name("GeneralSettings.changed")
 
@@ -20,6 +19,8 @@ enum GeneralSettings {
         static let ctrlSpaceEnabled = "CtrlSpaceSwitchEnabled"
         static let pauseMediaDuringVoice = "PauseMediaDuringVoiceInput"
         static let voiceHandledByDoubao = "VoiceHandledByDoubaoGlobalShortcut"
+        static let voiceOptionKey = "DoubaoVoiceOptionKeyCode"
+        static let nativeFnStop = "UseDoubaoLongPressFnToFinish"
         static let voiceHotkeyKeyCode = "VoiceHotkeyKeyCode"
         static let voiceHotkeyModifiers = "VoiceHotkeyModifiers"
         static let cycleHotkeyKeyCode = "CycleInputSourceHotkeyKeyCode"
@@ -126,6 +127,24 @@ enum GeneralSettings {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: Key.voiceHandledByDoubao)
+            postChanged()
+        }
+    }
+
+    /// 豆包选中后用于触发免按语音的键。老版本固定使用左 Option。
+    static var voiceOptionKey: VoiceOptionKey {
+        get { VoiceOptionKey(rawValue: UserDefaults.standard.integer(forKey: Key.voiceOptionKey)) ?? .left }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Key.voiceOptionKey)
+            postChanged()
+        }
+    }
+
+    /// 用户已将豆包的「长按模式」设为 Fn。默认沿用原有的直接拦截。
+    static var nativeFnStop: Bool {
+        get { UserDefaults.standard.bool(forKey: Key.nativeFnStop) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Key.nativeFnStop)
             postChanged()
         }
     }

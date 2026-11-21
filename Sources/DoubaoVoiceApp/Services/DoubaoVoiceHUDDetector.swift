@@ -5,7 +5,7 @@ import IOKit.pwr_mgt
 
 /// 探测豆包语音 HUD（屏幕下方的胶囊）是否可见，判断语音会话是否仍在进行。
 ///
-/// 背景：本 App 与豆包之间只有「模拟左 Option 单击」这一条单向通道，同一个单击既是开始
+/// 背景：本 App 接管快捷键时通过模拟 Option 单击触发豆包，同一个单击既是开始
 /// 也是结束。只要有一次单击没送达（Electron 应用的文本输入上下文滞后于 TIS 切换），或者
 /// 豆包自己结束了录音（静音自动退出、Esc 取消），内部状态就会与豆包真实状态反转：
 /// 想开变成关、想关变成开，表现为「按了 Fn 不触发」或「刚拉起的录音立刻又消失」。
@@ -30,6 +30,7 @@ enum DoubaoVoiceHUDDetector {
     private static let minWindowHeight: Double = 25
 
     private static var cachedIMEPid: pid_t?
+    private static var lastHUDWindowID: CGWindowID?
 
     /// 豆包输入法进程是否在跑。必须在主线程调用。
     static func isIMEProcessRunning() -> Bool {
@@ -43,13 +44,21 @@ enum DoubaoVoiceHUDDetector {
     /// 用来区分「豆包正在慢慢启动，别再发键」和「这一击落空 / 被放弃，可以安全补发」。
     /// 公开 API，不需要额外权限。必须在主线程调用。
     static func isVoiceInputAssertionHeld() -> Bool {
+        voiceInputAssertion() == true
+    }
+
+    /// 系统查询失败返回 nil。收尾时必须区分查询失败和麦克风已释放。
+    static func voiceInputAssertion(createdBefore date: Date? = nil) -> Bool? {
         guard let pid = imePid() else { return false }
         var assertions: Unmanaged<CFDictionary>?
         guard IOPMCopyAssertionsByProcess(&assertions) == kIOReturnSuccess,
               let byProcess = assertions?.takeRetainedValue() as? [NSNumber: [[String: Any]]]
-        else { return false }
+        else { return nil }
 
         return (byProcess[NSNumber(value: pid)] ?? []).contains { assertion in
+            // 轻按豆包的长按键也会短暂开麦。用创建时间区别按键之前已在录的会话。
+            if let date, let created = assertion["AssertStartWhen"] as? Date,
+               created >= date { return false }
             let name = assertion[kIOPMAssertionNameKey as String] as? String ?? ""
             return name.localizedCaseInsensitiveContains("ASR")
                 || name.localizedCaseInsensitiveContains("Voice")
@@ -59,12 +68,18 @@ enum DoubaoVoiceHUDDetector {
     /// 豆包语音胶囊当前是否在屏。找不到豆包输入法进程时返回 false。
     /// 必须在主线程调用（内部使用 NSWorkspace / CGWindowList）。
     static func isHUDVisible() -> Bool {
+        hudVisibility() == true
+    }
+
+    static func hudVisibility() -> Bool? {
         guard let pid = imePid() else { return false }
         guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
             as? [[String: Any]]
-        else { return false }
+        else { return nil }
 
-        return infos.contains { isVoiceHUDWindow($0, pid: pid) }
+        guard let hud = infos.first(where: { isVoiceHUDWindow($0, pid: pid) }) else { return false }
+        lastHUDWindowID = (hud[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+        return true
     }
 
     /// 调试用：描述豆包进程当前所有在屏窗口，方便在日志里核对胶囊窗口的真实尺寸。
@@ -97,6 +112,10 @@ enum DoubaoVoiceHUDDetector {
         let layer = doubleValue(info[kCGWindowLayer as String]) ?? 0
         guard layer > 0 else { return false }
 
+        // 已见过的语音窗口切换到整理形态时可能变窄，仍然是同一个窗口。
+        if let lastHUDWindowID, (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value == lastHUDWindowID {
+            return true
+        }
         let bounds = info[kCGWindowBounds as String] as? [String: Any]
         let width = doubleValue(bounds?["Width"]) ?? 0
         let height = doubleValue(bounds?["Height"]) ?? 0
@@ -112,6 +131,7 @@ enum DoubaoVoiceHUDDetector {
             return pid
         }
 
+        lastHUDWindowID = nil
         cachedIMEPid = NSRunningApplication
             .runningApplications(withBundleIdentifier: imeBundleID)
             .first?

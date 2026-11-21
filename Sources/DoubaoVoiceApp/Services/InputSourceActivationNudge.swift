@@ -35,42 +35,32 @@ final class InputSourceActivationNudge {
 
     private init() {}
 
+    /// 语音启动只等正在执行的输入源切换归还 key window，避免打断原编辑框的输入会话。
+    func whenCurrentRefreshFinishes(_ completion: @escaping () -> Void) {
+        if isRunning {
+            completions.append(completion)
+        } else {
+            completion()
+        }
+    }
+
     func performIfNeeded(
         description: String,
-        completion: (() -> Void)? = nil
+        previousSourceNeededNudge: Bool = false
     ) {
+        guard !isRunning else { return }
         let previousApp = currentInteractionApplication()
         guard isAllowedApp(previousApp) else {
             logSkippedApp(previousApp, description: description)
-            completion?()
             return
         }
 
-        guard InputSourceManager.currentSourceNeedsActivationNudge() else {
-            completion?()
-            return
-        }
-        perform(description: description, previousApp: previousApp, completion: completion)
-    }
-
-    private func perform(
-        description: String,
-        previousApp: NSRunningApplication?,
-        completion: (() -> Void)?
-    ) {
-        // 正在刷新时，AX 可能暂时落到本 App；沿用当前操作的完成回调，不能据此
-        // 重新判定输入目标。其他情况必须先过安全检查，不能先创建面板再恢复浮窗。
-        if !isRunning, let reason = focusRefreshSkipReason(for: previousApp) {
+        guard previousSourceNeededNudge || InputSourceManager.currentSourceNeedsActivationNudge() else { return }
+        if let reason = focusRefreshSkipReason(for: previousApp) {
             Logger.shared.debug("跳过输入源激活补丁: \(description), \(reason)")
-            completion?()
             return
         }
 
-        if let completion = completion {
-            completions.append(completion)
-        }
-
-        guard !isRunning else { return }
         isRunning = true
 
         let previousAppName = previousApp?.localizedName ?? "未知应用"
@@ -163,7 +153,7 @@ final class InputSourceActivationNudge {
         let frontmostApp = NSWorkspace.shared.frontmostApplication
         // AX 焦点归属与 App 的 active 状态不同。Notion 全局搜索在其他 App 上方
         // 可以持有键盘焦点，但宿主仍是 inactive；此时任何 key window 换手都会
-        // 触发它的 blur 处理。该保护也适用于语音启动的强制刷新。
+        // 触发它的 blur 处理。
         guard app.isActive, frontmostApp?.processIdentifier == app.processIdentifier else {
             return "保护非激活浮窗: \(app.localizedName ?? "未知应用") (\(app.bundleIdentifier ?? "nil")), 前台应用: \(frontmostApp?.localizedName ?? "未知应用")"
         }
@@ -187,10 +177,10 @@ final class InputSourceActivationNudge {
         return nil
     }
 
-    private func currentInteractionApplication() -> NSRunningApplication? {
+    func currentInteractionApplication() -> NSRunningApplication? {
         // Raycast 这类 key-thief 浮窗不会成为 NSWorkspace 的 frontmostApplication；
         // Notion 全局搜索同样会在 Finder 等前台 App 上方持有 AX 焦点，因此仍应
-        // 先以 AX 判断真正的输入目标，再由 perform 在创建面板前保护非激活或
+        // 先以 AX 判断真正的输入目标，再在创建面板前保护非激活或
         // 置顶浮窗；仅限制刷新后的 activate 不足以阻止浮窗在失焦时关闭。
         if let focusedApp = accessibilityFocusedApplication(), !isCurrentApp(focusedApp) {
             return focusedApp

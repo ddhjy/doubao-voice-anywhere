@@ -338,6 +338,26 @@ final class SettingsStore: ObservableObject {
         )
     }
 
+    var voiceOptionKey: Binding<VoiceOptionKey> {
+        Binding(
+            get: { GeneralSettings.voiceOptionKey },
+            set: { key in
+                guard key != GeneralSettings.voiceOptionKey else { return }
+                GeneralSettings.voiceOptionKey = key
+            }
+        )
+    }
+
+    var nativeFnStop: Binding<Bool> {
+        Binding(
+            get: { GeneralSettings.nativeFnStop },
+            set: { value in
+                guard value != GeneralSettings.nativeFnStop else { return }
+                GeneralSettings.nativeFnStop = value
+            }
+        )
+    }
+
     var pauseMediaDuringVoice: Binding<Bool> {
         Binding(
             get: { GeneralSettings.pauseMediaDuringVoice },
