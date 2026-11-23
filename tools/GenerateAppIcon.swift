@@ -6,22 +6,39 @@
 //   swift tools/GenerateAppIcon.swift                     # 写回 Resources/ 三件套
 //   swift tools/GenerateAppIcon.swift out/AppIcon.icns    # 指定输出目录（三件套跟随）
 //   ICON_KEEP_ICONSET=1 swift tools/GenerateAppIcon.swift  # 同时保留 .iconset 便于逐尺寸检查
+//   ICON_PREVIEW_DIR=out/preview swift tools/GenerateAppIcon.swift
+//                                                         # 另用 Icon Composer 的 ictool 导出六种外观的预览图
+//
+// 设计是从「这个 App 只做一件事」推出来的：按一下，说话，字落在光标处。
+//   - 声音的样子是一排竖条（波形），文字的样子是一根竖条（光标），两者本来就是同一种形状。
+//     所以全图只有一族胶囊：三根玻璃声波，接一根朱砂色光标——声波的下一拍就是光标。
+//   - 三根声波从左到右由虚到实（三档固定的不透明度）：声音会散，落成字才留得下来。
+//   - 高度走 3 : 5 : 4 : 6 的模数，光标最高，它是终点，也是全图唯一的高彩度色。
+//   - 不放任何字符和麦克风：快捷键可配置，写死 "fn" 是错的；麦克风和气泡是所有语音 App
+//     的公共符号，认不出是谁。
+//   - 配色取「丹青」：青只给底，丹（朱砂）只给光标。
+//     避开语音类 App 条件反射的蓝紫和豆包本体的品牌色，朱砂同时接住了上一版图标的主色。
+//   - 全图只用平涂色，不用渐变：层次靠三档不透明度、边缘高光和投影，不靠颜色过渡。
 //
 // 双轨输出的原因：
 //   - AppIcon.icns（CFBundleIconFile）：macOS 13–15 的标准图标格式。
 //   - Assets.car（CFBundleIconName）：macOS 26+ 会把纯 icns 当「旧式图标」缩小垫在
 //     白色底板上；要满版显示必须走 Icon Composer 的 .icon → actool 编译。
-//     编译需要 Xcode 26 的 actool，本机没有时会告警跳过（icns 兜底仍然可用）。
-//     Assets.car 与 icns 一样是入库产物，CI（macos-14 runner）只负责拷贝。
+//     编译需要 Xcode 26 及以上的 actool，本机没有时会告警跳过（icns 兜底仍然可用）。
+//     Assets.car 与 icns 一样是入库产物，CI（macos-15 runner）只负责拷贝。
 //
-// 每个尺寸都按矢量重画而不是缩放大图：16pt / 32pt 用简化构图（去掉声波弧线、放大键帽），
+// 两条轨道共用同一套构图坐标。液态玻璃（边缘高光、投影、各外观的变体）全部交给
+// Icon Composer 的材质参数，图层只提供纯形状的 SVG；icns 没有系统材质可用，
+// 用 CoreGraphics 把同样的层次手绘出来。
+//
+// icns 的每个尺寸都按矢量重画而不是缩放大图：16pt / 32pt 用简化构图（竖条加粗、去掉受光边），
 // 128pt 以上用完整构图。这是 Apple 图标的惯例，也是小尺寸不糊的唯一办法。
 //
 
 import AppKit
-import CoreText
 import Foundation
 import ImageIO
+import SwiftUI
 
 // MARK: - 颜色
 
@@ -51,217 +68,190 @@ func oklch(_ l: CGFloat, _ c: CGFloat, _ h: CGFloat, alpha: CGFloat = 1) -> NSCo
     return NSColor(srgbRed: encode(rLinear), green: encode(gLinear), blue: encode(bLinear), alpha: alpha)
 }
 
+/// 每个面一个平涂色，没有渐变。所有取值都留在 sRGB 色域内（彩度再高会被裁掉，色相就跑了）。
+/// 调色时注意：ictool 导出的 PNG 是 Display P3，用不做色彩管理的看图工具看会偏灰，
+/// 照着那个观感加彩度，上屏就过艳了。
 enum Palette {
-    /// 朱砂红：避开语音类 App 条件反射的蓝紫，也避开豆包本体的品牌色。
-    /// 上下只差 0.07 明度——是「受光」，不是渐变特效。
-    static let bodyTop = oklch(0.618, 0.168, 36)
-    static let bodyBottom = oklch(0.548, 0.172, 29)
-    static let bodySheen = NSColor(white: 1, alpha: 0.10)
+    /// 青：色相取在朱砂的对面（接近互补），明度压到 0.50，白色声波和朱砂光标都立得住；
+    /// 彩度不超过 0.08，底色不抢戏。
+    static let body = oklch(0.50, 0.080, 210)
 
-    /// 键帽：极浅暖白，走「材质」而不是纯白色块。
-    static let capFaceTop = oklch(0.988, 0.003, 75)
-    static let capFaceBottom = oklch(0.952, 0.008, 66)
-    static let capWall = oklch(0.830, 0.012, 52)
-    static let capWallShade = oklch(0.760, 0.016, 44)
+    /// 丹：全图唯一的高彩度色，只给光标。红绿色盲视角下与青底退成黄对蓝，仍然分得开。
+    static let caret = oklch(0.67, 0.180, 38)
 
-    static let legend = oklch(0.400, 0.040, 32)
+    static let bar = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
 
-    static let wave = NSColor(white: 1, alpha: 1)
-}
-
-// MARK: - 形状
-
-/// Apple 图标那颗「连续圆角」方形：直边保持笔直，四角走超椭圆。
-/// 纯超椭圆会让直边微微鼓起（824 宽下约 5px），只在角上用超椭圆才对得上系统图标。
-func squircle(in rect: CGRect, cornerRadius r: CGFloat, exponent n: CGFloat = 5) -> NSBezierPath {
-    let path = NSBezierPath()
-    let steps = 64
-
-    /// 角落 R×R 方框里的四分之一超椭圆。
-    func corner(cx: CGFloat, cy: CGFloat, sx: CGFloat, sy: CGFloat, reversed: Bool) {
-        for i in 0...steps {
-            let u = CGFloat(reversed ? steps - i : i) / CGFloat(steps)
-            let t = u * .pi / 2
-            let x = cx + sx * r * pow(cos(t), 2 / n)
-            let y = cy + sy * r * pow(sin(t), 2 / n)
-            path.line(to: CGPoint(x: x, y: y))
-        }
-    }
-
-    path.move(to: CGPoint(x: rect.minX + r, y: rect.maxY))
-    path.line(to: CGPoint(x: rect.maxX - r, y: rect.maxY))
-    corner(cx: rect.maxX - r, cy: rect.maxY - r, sx: 1, sy: 1, reversed: true)
-    path.line(to: CGPoint(x: rect.maxX, y: rect.minY + r))
-    corner(cx: rect.maxX - r, cy: rect.minY + r, sx: 1, sy: -1, reversed: false)
-    path.line(to: CGPoint(x: rect.minX + r, y: rect.minY))
-    corner(cx: rect.minX + r, cy: rect.minY + r, sx: -1, sy: -1, reversed: true)
-    path.line(to: CGPoint(x: rect.minX, y: rect.maxY - r))
-    corner(cx: rect.minX + r, cy: rect.maxY - r, sx: -1, sy: 1, reversed: false)
-    path.close()
-    return path
-}
-
-func fillVertical(_ path: NSBezierPath, top: NSColor, bottom: NSColor) {
-    NSGradient(starting: bottom, ending: top)?.draw(in: path, angle: 90)
+    /// 深色外观：底色退成墨青，「青」改由声波自己带着（白色声波配墨底会只剩黑白橙）。
+    static let darkBody = oklch(0.23, 0.025, 230)
+    static let darkBar = oklch(0.80, 0.080, 185)
 }
 
 // MARK: - 构图
 
-/// 键帽正面的字符。产品的默认快捷键就是 Fn，图标直接把这件事说出来。
-let legendText = "fn"
-
+/// 坐标一律写在 Icon Composer 的满版 1024 画布上（y 轴向上），.icon 图层直接用；
+/// icns 的图标本体只有 824 见方（Apple 的 macOS 图标模板），画的时候整体缩小 824/1024。
 struct Layout {
-    /// 画布 1024 下，图标本体是 824 见方、圆角 185.4——Apple 的 macOS 图标模板尺寸。
-    let canvas: CGFloat = 1024
-    let bodySide: CGFloat = 824
-    let bodyRadius: CGFloat = 185.4
+    static let canvas: CGFloat = 1024
+    static let bodySide: CGFloat = 824
 
-    /// 小尺寸下弧线会退化成半个像素的脏点，所以 32pt 及以下直接不画，改为放大键帽。
-    let detailed: Bool
+    /// 声波高度（模数的倍数）与由虚到实的不透明度；光标高 6 个模数。
+    static let barUnits: [CGFloat] = [3, 5, 4]
+    static let barOpacities: [CGFloat] = [0.55, 0.78, 1]
+    static let caretUnits: CGFloat = 6
 
-    var capSide: CGFloat { detailed ? 386 : 500 }
-    var capCenter: CGPoint { detailed ? CGPoint(x: 512, y: 504) : CGPoint(x: 512, y: 512) }
-    var capRadius: CGFloat { capSide * 0.215 }
-    /// 键帽正面相对底座的内缩。侧边只留一道细边，底部多缩一截露出前壁——
-    /// 四周等宽会变成一圈灰镜框，而不是一颗能按下去的键。
-    var capInset: CGFloat { capSide * 0.034 }
-    var capFrontWall: CGFloat { capSide * 0.072 }
+    let unit: CGFloat
+    let barWidth: CGFloat
+    let gap: CGFloat
+    let caretWidth: CGFloat
 
-    var legendSize: CGFloat { capSide * 0.360 }
-    /// 声波按「越远弧越长」画（扬声器图标的惯例）：
-    /// 内圈 ±36° 收在键帽侧边旁，端点避开键帽圆角；外圈 ±46° 把构图纵向撑开——
-    /// 等张角时内圈端点会正好怼在键帽四角上，元素关系变含糊。
-    var waves: [(radius: CGFloat, alpha: CGFloat, spread: CGFloat)] {
-        [(268, 1.0, 36), (356, 0.62, 46)]
+    static let full = Layout(unit: 92, barWidth: 128, gap: 56, caretWidth: 52)
+
+    /// 16pt / 32pt 专用：完整构图在 16px 下光标不到 1 像素、间隙只剩半个像素。
+    /// 宽度按「16px 图里的整像素」取（声波 2px、间隙和光标各 1px，总宽 10px 居中），
+    /// 竖边才能落在像素格上；32px / 64px 是它的整数倍，同样对齐。
+    static let compact: Layout = {
+        let pixel = canvas / 16 * canvas / bodySide
+        return Layout(unit: 106, barWidth: pixel * 2, gap: pixel, caretWidth: pixel)
+    }()
+
+    private var totalWidth: CGFloat {
+        barWidth * CGFloat(Layout.barUnits.count) + gap * CGFloat(Layout.barUnits.count) + caretWidth
     }
-    var waveWidth: CGFloat { 27 }
-    var glowRadius: CGFloat { 430 }
-}
 
-func drawIcon(pointSize: CGFloat, into context: CGContext) {
-    let layout = Layout(detailed: pointSize >= 128)
-    let body = CGRect(
-        x: (layout.canvas - layout.bodySide) / 2,
-        y: (layout.canvas - layout.bodySide) / 2,
-        width: layout.bodySide,
-        height: layout.bodySide
-    )
-    let bodyPath = squircle(in: body, cornerRadius: layout.bodyRadius)
-
-    // 投影：先用实色填一遍投出影子，再把渐变画在上面，避免渐变自己带上一层灰。
-    context.saveGState()
-    context.setShadow(
-        offset: CGSize(width: 0, height: -10),
-        blur: 22,
-        color: NSColor(white: 0, alpha: 0.18).cgColor
-    )
-    Palette.bodyBottom.setFill()
-    bodyPath.fill()
-    context.restoreGState()
-
-    context.saveGState()
-    bodyPath.addClip()
-    fillVertical(bodyPath, top: Palette.bodyTop, bottom: Palette.bodyBottom)
-
-    // 顶部一层极淡的受光，让色块变成「材质」。
-    let sheen = NSBezierPath(rect: CGRect(x: body.minX, y: body.midY, width: body.width, height: body.height / 2))
-    NSGradient(starting: Palette.bodySheen, ending: NSColor(white: 1, alpha: 0))?.draw(in: sheen, angle: -90)
-    context.restoreGState()
-
-    if layout.detailed {
-        context.saveGState()
-        bodyPath.addClip()
-        drawGlow(layout: layout, context: context)
-        context.restoreGState()
-
-        drawWaves(layout: layout, context: context)
-    }
-    drawKeycap(layout: layout, context: context, showLegend: pointSize >= 32)
-}
-
-/// 键帽背后一层极淡的径向辉光：把「正在发声」的光感垫在构图底下，
-/// 也让纯平红底有了受光的材质。小尺寸像素太少，画了只会发灰，不画。
-func drawGlow(layout: Layout, context: CGContext) {
-    guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-          let glow = CGGradient(
-              colorsSpace: space,
-              colors: [NSColor(white: 1, alpha: 0.12).cgColor, NSColor(white: 1, alpha: 0).cgColor] as CFArray,
-              locations: [0, 1]
-          )
-    else { return }
-    context.drawRadialGradient(
-        glow,
-        startCenter: layout.capCenter, startRadius: 0,
-        endCenter: layout.capCenter, endRadius: layout.glowRadius,
-        options: []
-    )
-}
-
-/// 键帽左右对称的两组弧线：声音从这颗键里发出来。
-/// 只放右侧会变成 Wi-Fi 信号那套；左右各两道读起来才是「在出声」。
-func drawWaves(layout: Layout, context: CGContext) {
-    let center = layout.capCenter
-
-    for wave in layout.waves {
-        for mirrored in [false, true] {
-            let path = NSBezierPath()
-            let base: CGFloat = mirrored ? 180 : 0
-            path.appendArc(
-                withCenter: center,
-                radius: wave.radius,
-                startAngle: base - wave.spread,
-                endAngle: base + wave.spread
+    var bars: [CGRect] {
+        let left = Layout.canvas / 2 - totalWidth / 2
+        return Layout.barUnits.enumerated().map { index, units in
+            CGRect(
+                x: left + CGFloat(index) * (barWidth + gap),
+                y: Layout.canvas / 2 - units * unit / 2,
+                width: barWidth,
+                height: units * unit
             )
-            path.lineWidth = layout.waveWidth
-            path.lineCapStyle = .round
-            Palette.wave.withAlphaComponent(wave.alpha).setStroke()
-            path.stroke()
         }
     }
+
+    var caret: CGRect {
+        let height = Layout.caretUnits * unit
+        return CGRect(
+            x: Layout.canvas / 2 + totalWidth / 2 - caretWidth,
+            y: Layout.canvas / 2 - height / 2,
+            width: caretWidth,
+            height: height
+        )
+    }
 }
 
-func drawKeycap(layout: Layout, context: CGContext, showLegend: Bool) {
-    let side = layout.capSide
-    let base = CGRect(
-        x: layout.capCenter.x - side / 2,
-        y: layout.capCenter.y - side / 2,
-        width: side,
-        height: side
+// MARK: - 形状
+
+/// Apple 图标那颗「连续圆角」方形。直接取系统自己的曲线（SwiftUI 的 .continuous 圆角），
+/// 与按官方模板出图的图标轮廓只差抗锯齿级别的像素。
+/// 别自己拿超椭圆去拟合：在角上套 n=5 的超椭圆，四角会明显偏方。
+func squircle(in rect: CGRect, cornerRadius: CGFloat) -> CGPath {
+    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: rect).cgPath
+}
+
+func capsule(_ rect: CGRect) -> CGPath {
+    let radius = min(rect.width, rect.height) / 2
+    return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+}
+
+// MARK: - icns 手绘
+
+func white(_ alpha: CGFloat) -> NSColor {
+    Palette.bar.withAlphaComponent(alpha)
+}
+
+struct Painter {
+    let context: CGContext
+    /// 1 个构图单位合多少设备像素。CoreGraphics 的阴影偏移和模糊不跟 CTM 走，要自己乘。
+    let unitScale: CGFloat
+
+    /// 只在形状外侧投影。半透明的玻璃条下面不该透出自己的影子；
+    /// 也不能「先填实色投影、再盖上填色」，那样浅色边缘的抗锯齿像素会透出一圈深色。
+    func shadow(of path: CGPath, drop: CGFloat, blur: CGFloat, alpha: CGFloat) {
+        context.saveGState()
+        context.addRect(context.boundingBoxOfClipPath)
+        context.addPath(path)
+        context.clip(using: .evenOdd)
+        context.setShadow(
+            offset: CGSize(width: 0, height: -drop * unitScale),
+            blur: blur * unitScale,
+            color: NSColor(white: 0, alpha: alpha).cgColor
+        )
+        context.addPath(path)
+        context.setFillColor(NSColor.black.cgColor)
+        context.fillPath()
+        context.restoreGState()
+    }
+
+    func fill(_ path: CGPath, _ color: NSColor) {
+        context.addPath(path)
+        context.setFillColor(color.cgColor)
+        context.fillPath()
+    }
+
+    /// 贴着形状内侧的一圈受光边：玻璃的厚度感全靠它。
+    func rim(_ path: CGPath, width: CGFloat, _ color: NSColor) {
+        context.saveGState()
+        context.addPath(path)
+        context.clip()
+        context.addPath(path)
+        context.setLineWidth(width * 2)
+        context.setStrokeColor(color.cgColor)
+        context.strokePath()
+        context.restoreGState()
+    }
+}
+
+func drawIcon(pointSize: CGFloat, painter: Painter) {
+    let detailed = pointSize >= 128
+
+    // 模板尺寸：1024 画布里本体 824 见方、圆角 185.4。
+    let bodySide = Layout.bodySide
+    let inset = (Layout.canvas - bodySide) / 2
+    let body = squircle(
+        in: CGRect(x: inset, y: inset, width: bodySide, height: bodySide),
+        cornerRadius: 185.4
     )
+    painter.shadow(of: body, drop: 10, blur: 22, alpha: 0.20)
+    painter.fill(body, Palette.body)
+    if detailed {
+        painter.rim(body, width: 3, white(0.14))
+    }
 
-    let basePath = squircle(in: base, cornerRadius: layout.capRadius)
-    fillVertical(basePath, top: Palette.capWall, bottom: Palette.capWallShade)
-
-    let inset = layout.capInset
-    let face = CGRect(
-        x: base.minX + inset,
-        y: base.minY + inset + layout.capFrontWall,
-        width: base.width - inset * 2,
-        height: base.height - inset * 2 - layout.capFrontWall
-    )
-    let facePath = squircle(in: face, cornerRadius: layout.capRadius * 0.72)
-    fillVertical(facePath, top: Palette.capFaceTop, bottom: Palette.capFaceBottom)
-
-    guard showLegend else { return }
-
-    let baseFont = NSFont.systemFont(ofSize: layout.legendSize, weight: .semibold)
-    let font = baseFont.fontDescriptor.withDesign(.rounded)
-        .flatMap { NSFont(descriptor: $0, size: layout.legendSize) } ?? baseFont
-    let attributed = NSAttributedString(
-        string: legendText,
-        attributes: [.font: font, .foregroundColor: Palette.legend, .kern: layout.legendSize * 0.01]
-    )
-
-    // 用字形轮廓的实际外框对齐，而不是行高：行高会把 "fn" 压在视觉中心偏上。
-    let line = CTLineCreateWithAttributedString(attributed)
-    let bounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+    let context = painter.context
+    let glyphScale = bodySide / Layout.canvas
     context.saveGState()
-    context.textPosition = CGPoint(
-        x: face.midX - (bounds.minX + bounds.width / 2),
-        y: face.midY - (bounds.minY + bounds.height / 2)
+    context.translateBy(x: Layout.canvas / 2, y: Layout.canvas / 2)
+    context.scaleBy(x: glyphScale, y: glyphScale)
+    context.translateBy(x: -Layout.canvas / 2, y: -Layout.canvas / 2)
+    drawGlyphs(
+        layout: detailed ? .full : .compact,
+        detailed: detailed,
+        painter: Painter(context: context, unitScale: painter.unitScale * glyphScale)
     )
-    CTLineDraw(line, context)
     context.restoreGState()
+}
+
+/// 手绘版的液态玻璃：平涂的半透明白 + 内侧一圈受光边 + 外侧柔影，不用渐变。
+/// 小尺寸下受光边会糊成灰边，不画；由虚到实的差距也收窄，免得最左一根淡到看不见。
+func drawGlyphs(layout: Layout, detailed: Bool, painter: Painter) {
+    for (rect, baseOpacity) in zip(layout.bars, Layout.barOpacities) {
+        let opacity = detailed ? baseOpacity : 0.35 + 0.65 * baseOpacity
+        let path = capsule(rect)
+        painter.shadow(of: path, drop: 8, blur: 20, alpha: 0.20 * opacity)
+        painter.fill(path, white(opacity))
+        if detailed {
+            painter.rim(path, width: 3, white(0.5))
+        }
+    }
+
+    let caret = capsule(layout.caret)
+    painter.shadow(of: caret, drop: 8, blur: 18, alpha: 0.26)
+    painter.fill(caret, Palette.caret)
+    if detailed {
+        painter.rim(caret, width: 2.5, white(0.22))
+    }
 }
 
 // MARK: - 输出
@@ -286,14 +276,9 @@ func renderPNG(pixels: Int, pointSize: CGFloat) -> Data {
     context.setShouldAntialias(true)
     context.interpolationQuality = .high
 
-    NSGraphicsContext.saveGraphicsState()
-    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-    context.saveGState()
-    let scale = CGFloat(pixels) / 1024
+    let scale = CGFloat(pixels) / Layout.canvas
     context.scaleBy(x: scale, y: scale)
-    drawIcon(pointSize: pointSize, into: context)
-    context.restoreGState()
-    NSGraphicsContext.restoreGraphicsState()
+    drawIcon(pointSize: pointSize, painter: Painter(context: context, unitScale: scale))
 
     guard let image = context.makeImage() else {
         fatalError("无法生成 \(pixels)px 图像")
@@ -307,6 +292,23 @@ func renderPNG(pixels: Int, pointSize: CGFloat) -> Data {
         fatalError("PNG 编码失败")
     }
     return output as Data
+}
+
+func run(_ executable: String, _ arguments: [String]) throws -> (status: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+func warn(_ message: String) {
+    FileHandle.standardError.write(Data("[警告] \(message)\n".utf8))
 }
 
 let repoRoot = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -345,13 +347,9 @@ try? FileManager.default.createDirectory(
     withIntermediateDirectories: true
 )
 
-let iconutil = Process()
-iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-iconutil.arguments = ["-c", "icns", iconsetURL.path, "-o", outputPath.path]
-try iconutil.run()
-iconutil.waitUntilExit()
-guard iconutil.terminationStatus == 0 else {
-    FileHandle.standardError.write(Data("[错误] iconutil 失败\n".utf8))
+let iconutil = try run("/usr/bin/iconutil", ["-c", "icns", iconsetURL.path, "-o", outputPath.path])
+guard iconutil.status == 0 else {
+    FileHandle.standardError.write(Data("[错误] iconutil 失败：\(iconutil.output)\n".utf8))
     exit(1)
 }
 
@@ -363,56 +361,48 @@ print("[信息] 已生成 \(outputPath.path)")
 
 // MARK: - macOS 26 满版图标（AppIcon.icon + Assets.car）
 
-/// Icon Composer 的层画布没有 icns 那圈约 100px 的透明边距：1024 画布直接被系统
-/// 裁成图标形状。沿用同一套构图坐标时要放大 1024/824，元素在成品里的占比才与 icns 一致。
-let layerScale: CGFloat = 1024.0 / 824.0
-
-func renderLayerPNG(draw: (CGContext) -> Void) -> Data {
-    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-          let context = CGContext(
-              data: nil,
-              width: 1024,
-              height: 1024,
-              bitsPerComponent: 8,
-              bytesPerRow: 0,
-              space: colorSpace,
-              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-          )
-    else {
-        fatalError("无法创建图层位图")
-    }
-
-    context.setShouldAntialias(true)
-    NSGraphicsContext.saveGraphicsState()
-    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
-    context.saveGState()
-    context.translateBy(x: 512, y: 512)
-    context.scaleBy(x: layerScale, y: layerScale)
-    context.translateBy(x: -512, y: -512)
-    draw(context)
-    context.restoreGState()
-    NSGraphicsContext.restoreGraphicsState()
-
-    guard let image = context.makeImage() else {
-        fatalError("无法生成图层图像")
-    }
-    let output = NSMutableData()
-    guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else {
-        fatalError("图层 PNG 编码失败")
-    }
-    CGImageDestinationAddImage(destination, image, nil)
-    guard CGImageDestinationFinalize(destination) else {
-        fatalError("图层 PNG 编码失败")
-    }
-    return output as Data
-}
-
 func srgbString(_ color: NSColor) -> String {
     guard let c = color.usingColorSpace(.sRGB) else { fatalError("颜色转换失败") }
     return String(
         format: "extended-srgb:%.5f,%.5f,%.5f,%.5f",
         c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent
     )
+}
+
+func hexString(_ color: NSColor) -> String {
+    guard let c = color.usingColorSpace(.sRGB) else { fatalError("颜色转换失败") }
+    return String(
+        format: "#%02x%02x%02x",
+        Int((c.redComponent * 255).rounded()),
+        Int((c.greenComponent * 255).rounded()),
+        Int((c.blueComponent * 255).rounded())
+    )
+}
+
+/// 图层用 SVG 而不是位图：Icon Composer 的高光是沿形状边缘算的，矢量边缘在任何尺寸下都干净。
+/// SVG 的 y 轴向下，与构图坐标相反。
+func capsuleSVG(_ rect: CGRect, fill: NSColor) -> String {
+    func n(_ value: CGFloat) -> String { String(format: "%g", Double(value)) }
+    let size = n(Layout.canvas)
+    return """
+    <svg xmlns="http://www.w3.org/2000/svg" width="\(size)" height="\(size)" viewBox="0 0 \(size) \(size)">\
+    <rect x="\(n(rect.minX))" y="\(n(Layout.canvas - rect.maxY))" width="\(n(rect.width))" height="\(n(rect.height))" \
+    rx="\(n(min(rect.width, rect.height) / 2))" fill="\(hexString(fill))"/>\
+    </svg>
+
+    """
+}
+
+/// 平涂填色。别换成 automatic-gradient：那是 Icon Composer 按单色自动派生的渐变。
+func solid(_ color: NSColor) -> [String: Any] {
+    ["solid": srgbString(color)]
+}
+
+/// JSONSerialization 会把 Double 0.78 写成 0.78000000000000003；走十进制数才能原样落盘。
+/// 返回 Any 是有意的：返回 NSNumber 的话，同一个字典字面量里的 true / false 会被一并
+/// 推断成 NSNumber，落盘变成 1 / 0，Icon Composer 直接拒读。
+func number(_ value: CGFloat) -> Any {
+    NSDecimalNumber(string: String(Double(value)))
 }
 
 let outputDir = outputPath.deletingLastPathComponent()
@@ -422,98 +412,134 @@ let assetsDir = iconPackageURL.appendingPathComponent("Assets", isDirectory: tru
 try? FileManager.default.removeItem(at: iconPackageURL)
 try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
 
-let layerLayout = Layout(detailed: true)
-try renderLayerPNG { context in
-    drawGlow(layout: layerLayout, context: context)
-    drawWaves(layout: layerLayout, context: context)
-}.write(to: assetsDir.appendingPathComponent("waves.png"))
-try renderLayerPNG { context in
-    drawKeycap(layout: layerLayout, context: context, showLegend: true)
-}.write(to: assetsDir.appendingPathComponent("keycap.png"))
+// 每根声波单独一层：「由虚到实」靠的是层不透明度，同一层里做不出三档。
+// 深色外观下把白色声波换成玉色。
+var barLayers: [[String: Any]] = []
+for (index, rect) in Layout.full.bars.enumerated() {
+    let name = "bar\(index + 1)"
+    try capsuleSVG(rect, fill: Palette.bar)
+        .write(to: assetsDir.appendingPathComponent("\(name).svg"), atomically: true, encoding: .utf8)
 
-// 背景用 .icon 原生的线性渐变而不是贴图：系统的深色/着色外观变体都从它派生。
-// groups/layers 数组的顺序是「最前的在最前面」，与 Icon Composer 图层面板一致。
-// 键帽单独一组并关掉半透明：默认的 Liquid Glass 会让红底透进来把暖白键帽染成粉色，
-// 而这颗键的设计本意是「实体按键」；声波留在另一组吃默认玻璃材质，光感是加分的。
-let iconJSON = """
-{
-  "fill" : {
-    "linear-gradient" : [
-      "\(srgbString(Palette.bodyTop))",
-      "\(srgbString(Palette.bodyBottom))"
+    var layer: [String: Any] = [
+        "name": name,
+        "image-name": "\(name).svg",
+        "glass": true,
+        "fill-specializations": [
+            ["appearance": "dark", "value": solid(Palette.darkBar)],
+        ],
     ]
-  },
-  "groups" : [
-    {
-      "layers" : [
-        {
-          "image-name" : "keycap.png",
-          "name" : "keycap"
-        }
-      ],
-      "translucency" : {
-        "enabled" : false,
-        "value" : 0
-      }
-    },
-    {
-      "layers" : [
-        {
-          "image-name" : "waves.png",
-          "name" : "waves"
-        }
-      ]
+    let opacity = Layout.barOpacities[index]
+    if opacity < 1 {
+        layer["opacity"] = number(opacity)
     }
-  ],
-  "supported-platforms" : {
-    "circles" : [ "watchOS" ],
-    "squares" : "shared"
-  }
+    barLayers.append(layer)
 }
-"""
-try iconJSON.write(
-    to: iconPackageURL.appendingPathComponent("icon.json"),
-    atomically: true,
-    encoding: .utf8
-)
+
+// 光标的颜色写在 SVG 里而不是用图层 fill：这样各外观下它都保持朱砂色，不被系统改写。
+try capsuleSVG(Layout.full.caret, fill: Palette.caret)
+    .write(to: assetsDir.appendingPathComponent("caret.svg"), atomically: true, encoding: .utf8)
+
+// groups / layers 数组的顺序是「最前的在最前面」，与 Icon Composer 图层面板一致。
+// 材质参数是在 Icon Composer 里逐项对比渲染后定下来的：
+//   - 全部平涂（solid），半透明必须关：Icon Composer 的半透明自带一道「上实下透」的过渡，
+//     开了就等于给每根胶囊加了渐变。三档虚实只靠图层不透明度。
+//   - 不开折射（Icon Composer 27 才有）：纯色底上没有东西可折，只会在胶囊里多出一圈淡影。
+//   - 玻璃质感留给边缘高光和中性阴影；layer-color 阴影会把朱砂色晕到青底上，发脏。
+//   - 根 fill 一旦要给深色外观单独取值，就得整体写成 fill-specializations（默认值是不带
+//     appearance 的那一条）；fill 与 fill-specializations 并存时，后者会被静默丢弃。
+//     背景用原生填色而不是贴图，着色 / 透明外观才能由系统从它派生。
+let iconDocument: [String: Any] = [
+    "fill-specializations": [
+        ["value": solid(Palette.body)],
+        ["appearance": "dark", "value": solid(Palette.darkBody)],
+    ],
+    "groups": [
+        [
+            "name": "glyphs",
+            "layers": [["name": "caret", "image-name": "caret.svg", "glass": true]] + barLayers.reversed(),
+            "shadow": ["kind": "neutral", "opacity": number(0.5)],
+            "specular": true,
+            "translucency": ["enabled": false, "value": number(0.5)],
+        ],
+    ],
+    "supported-platforms": [
+        "circles": ["watchOS"],
+        "squares": "shared",
+    ],
+]
+try JSONSerialization.data(withJSONObject: iconDocument, options: [.prettyPrinted, .sortedKeys])
+    .write(to: iconPackageURL.appendingPathComponent("icon.json"))
 print("[信息] 已生成 \(iconPackageURL.path)")
 
-// actool 编译成 Assets.car。需要 Xcode 26；失败只告警——icns 兜底仍然可用。
+// actool 编译成 Assets.car。需要 Xcode 26 及以上；失败只告警——icns 兜底仍然可用。
 let actoolOut = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("AppIcon-car-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: actoolOut, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: actoolOut) }
 
-let actool = Process()
-actool.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-actool.arguments = [
-    "actool", iconPackageURL.path,
-    "--compile", actoolOut.path,
-    "--platform", "macosx",
-    "--minimum-deployment-target", "13.0",
-    "--app-icon", "AppIcon",
-    "--include-all-app-icons",
-    "--output-partial-info-plist", actoolOut.appendingPathComponent("partial.plist").path,
-]
-let actoolStdout = Pipe()
-actool.standardOutput = actoolStdout
-actool.standardError = actoolStdout
-
 do {
-    try actool.run()
-    actool.waitUntilExit()
+    let actool = try run("/usr/bin/xcrun", [
+        "actool", iconPackageURL.path,
+        "--compile", actoolOut.path,
+        "--platform", "macosx",
+        "--minimum-deployment-target", "13.0",
+        "--app-icon", "AppIcon",
+        "--include-all-app-icons",
+        "--output-partial-info-plist", actoolOut.appendingPathComponent("partial.plist").path,
+    ])
     let compiledCar = actoolOut.appendingPathComponent("Assets.car")
-    guard actool.terminationStatus == 0,
-          FileManager.default.fileExists(atPath: compiledCar.path)
-    else {
-        let log = String(data: actoolStdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        FileHandle.standardError.write(Data("[警告] actool 编译 Assets.car 失败（macOS 26 将退回旧式图标显示）：\n\(log)\n".utf8))
-        exit(0)
+    if actool.status == 0, FileManager.default.fileExists(atPath: compiledCar.path) {
+        let carURL = outputDir.appendingPathComponent("Assets.car")
+        try? FileManager.default.removeItem(at: carURL)
+        try FileManager.default.copyItem(at: compiledCar, to: carURL)
+        print("[信息] 已生成 \(carURL.path)")
+    } else {
+        warn("actool 编译 Assets.car 失败（macOS 26 将退回旧式图标显示）：\n\(actool.output)")
     }
-    let carURL = outputDir.appendingPathComponent("Assets.car")
-    try? FileManager.default.removeItem(at: carURL)
-    try FileManager.default.copyItem(at: compiledCar, to: carURL)
-    print("[信息] 已生成 \(carURL.path)")
 } catch {
-    FileHandle.standardError.write(Data("[警告] 无法执行 actool（需要 Xcode 26）：\(error)\n".utf8))
+    warn("无法执行 actool（需要 Xcode 26 及以上）：\(error)")
+}
+
+// MARK: - 预览（可选）
+
+// 调材质参数时不必打开 Icon Composer：ictool 走的是同一套渲染，六种外观一次导出。
+if let previewPath = ProcessInfo.processInfo.environment["ICON_PREVIEW_DIR"], !previewPath.isEmpty {
+    let previewDir = URL(fileURLWithPath: previewPath, relativeTo: repoRoot)
+    do {
+        try FileManager.default.createDirectory(at: previewDir, withIntermediateDirectories: true)
+        let developerDir = try run("/usr/bin/xcode-select", ["-p"]).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let ictool = URL(fileURLWithPath: developerDir)
+            .appendingPathComponent("../Applications/Icon Composer.app/Contents/Executables/ictool")
+            .standardizedFileURL.path
+        guard FileManager.default.isExecutableFile(atPath: ictool) else {
+            throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: ictool])
+        }
+        var exported = 0
+        for rendition in ["Default", "Dark", "ClearLight", "ClearDark", "TintedLight", "TintedDark"] {
+            let file = previewDir.appendingPathComponent("AppIcon-\(rendition).png")
+            try? FileManager.default.removeItem(at: file)
+            var arguments = [
+                iconPackageURL.path, "--export-image",
+                "--output-file", file.path,
+                "--platform", "macOS",
+                "--rendition", rendition,
+                "--width", "1024", "--height", "1024", "--scale", "1",
+            ]
+            if rendition.hasPrefix("Tinted") {
+                arguments += ["--tint-color", "0.58", "--tint-strength", "0.8"]
+            }
+            let result = try run(ictool, arguments)
+            if result.status == 0, FileManager.default.fileExists(atPath: file.path) {
+                exported += 1
+            } else {
+                warn("ictool 导出 \(rendition) 失败：\(result.output)")
+            }
+        }
+        if exported > 0 {
+            print("[信息] 已导出 \(exported) 张预览到 \(previewDir.path)")
+        }
+    } catch {
+        warn("无法导出预览（需要 Xcode 自带的 Icon Composer）：\(error)")
+    }
 }

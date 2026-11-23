@@ -1,34 +1,83 @@
 {
-  "fill" : {
-    "linear-gradient" : [
-      "extended-srgb:0.84233,0.34313,0.20761,1.00000",
-      "extended-srgb:0.75647,0.23314,0.18610,1.00000"
-    ]
-  },
+  "fill-specializations" : [
+    {
+      "value" : {
+        "solid" : "extended-srgb:0.09101,0.43666,0.48767,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "solid" : "extended-srgb:0.06291,0.12223,0.15073,1.00000"
+      }
+    }
+  ],
   "groups" : [
     {
       "layers" : [
         {
-          "image-name" : "keycap.png",
-          "name" : "keycap"
+          "glass" : true,
+          "image-name" : "caret.svg",
+          "name" : "caret"
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-srgb:0.49992,0.81144,0.76995,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "bar3.svg",
+          "name" : "bar3"
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-srgb:0.49992,0.81144,0.76995,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "bar2.svg",
+          "name" : "bar2",
+          "opacity" : 0.78
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "extended-srgb:0.49992,0.81144,0.76995,1.00000"
+              }
+            }
+          ],
+          "glass" : true,
+          "image-name" : "bar1.svg",
+          "name" : "bar1",
+          "opacity" : 0.55
         }
       ],
+      "name" : "glyphs",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "specular" : true,
       "translucency" : {
         "enabled" : false,
-        "value" : 0
+        "value" : 0.5
       }
-    },
-    {
-      "layers" : [
-        {
-          "image-name" : "waves.png",
-          "name" : "waves"
-        }
-      ]
     }
   ],
   "supported-platforms" : {
-    "circles" : [ "watchOS" ],
+    "circles" : [
+      "watchOS"
+    ],
     "squares" : "shared"
   }
 }
