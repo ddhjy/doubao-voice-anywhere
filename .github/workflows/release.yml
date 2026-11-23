@@ -185,7 +185,7 @@ jobs:
     name: Build, sign & notarize
     needs: decide
     if: needs.decide.outputs.should_release == 'true'
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       RELEASE_TAG: ${{ needs.decide.outputs.tag }}
       RELEASE_VERSION: ${{ needs.decide.outputs.version }}

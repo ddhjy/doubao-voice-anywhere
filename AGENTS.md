@@ -9,7 +9,7 @@
 - 发布靠推 `main` 上的应用代码触发 `.github/workflows/release.yml`（相对最新 `v*` tag 自动 patch +1）；手动推 `v*` tag 或 `workflow_dispatch` 仍可指定版本。流程：universal 编译 → Developer ID 签名 → Apple 公证 → 装订票据 → 建 GitHub Release（DMG 给新用户 + zip 给自动更新）→ 给 zip 签 EdDSA、往 `appcast.xml` 追条目并推回 `main`。appcast 回推靠提交说明跳过，不会循环出包。CI 凭证用 `./setup-ci-secrets.sh` 配一次。
 - `appcast.xml` 在仓库根、跟着 `main` 走，App 里的 `SUFeedURL` 写死指向它的 raw 地址：换路径 / 换分支 = 老版本永久失联。它由 `tools/update-appcast.sh` 生成，别手改。`CFBundleVersion` 必须随版本号单调递增（CI 里就取 tag 的版本号），Sparkle 靠它比新旧。
 - universal 包必须逐架构编译再 `lipo` 合并（见 `build.sh`）。别改回一条 `swift build --arch arm64 --arch x86_64`：那会切到 Xcode build system，在 Xcode 26 上必崩在「The Xcode build system has terminated」。
-- App 图标是入库产物（`Resources/AppIcon.icns` + `AppIcon.icon` + `Assets.car`），改设计编辑 `tools/GenerateAppIcon.swift` 后执行 `swift tools/GenerateAppIcon.swift` 重新生成（编 `Assets.car` 需要 Xcode 26 的 actool）。icns 走 `CFBundleIconFile` 服务 macOS 13–15，`Assets.car` 走 `CFBundleIconName` 让 macOS 26+ 满版显示——只有 icns 时 Tahoe 会把图标缩小垫在白色底板上。CI（macos-14 runner）没有 Xcode 26，`build.sh` 只拷贝不生成。
+- App 图标是入库产物（`Resources/AppIcon.icns` + `AppIcon.icon` + `Assets.car`），改设计编辑 `tools/GenerateAppIcon.swift` 后执行 `swift tools/GenerateAppIcon.swift` 重新生成（编 `Assets.car` 需要 Xcode 26 的 actool）。icns 走 `CFBundleIconFile` 服务 macOS 13–15，`Assets.car` 走 `CFBundleIconName` 让 macOS 26+ 满版显示——只有 icns 时 Tahoe 会把图标缩小垫在白色底板上。CI（macos-15 runner）默认用 Xcode 16，编不了 `Assets.car`，`build.sh` 只拷贝不生成。
 - 有真实证书时 `build.sh` 一律带 Hardened Runtime（公证前提）；安全时间戳要联网，只由 `CODE_SIGN_TIMESTAMP=1` 打开，本地默认关着好让断网也能签。
 
 ## 架构速览
@@ -36,6 +36,6 @@
 1. 事件监听线程的回调（`EventTapDelegate` 各方法）必须立即返回，禁止 TIS、磁盘同步 IO 等可能阻塞的调用——阻塞超过约 1 秒系统会禁用整个 tap。
 2. 不要破坏配置默认值的向后兼容：老用户升级后行为不能变。
 3. 面向用户的文案（菜单、弹窗、日志）用简体中文。
-4. 部署目标是 macOS 13，别用更高版本才有的 API（CI 跑在 macos-14 runner 上，本机 SDK 更新，编不出错不代表用户能跑）。
+4. 部署目标是 macOS 13，别用更高版本才有的 API（CI 跑在 macos-15 runner 上，本机 SDK 更新，编不出错不代表用户能跑）。
 5. `build.sh` 里「只有拿到真证书才加 `--options runtime`」这个分支不能动。Hardened Runtime 含 Library Validation，要求 `Sparkle.framework` 和主程序 Team ID 一致，而 ad-hoc 签名没有 Team ID——给 ad-hoc 包加上 runtime，dyld 会拒绝加载框架，App 直接起不来。
 6. Sparkle 相关的打包细节：拷框架只能用 `ditto`（`cp -RL` 跟随符号链接会毁掉签名）；签名严格自内向外 `Autoupdate` → `Updater.app` → 框架 → 外层 app，不用 `--deep`；更新 zip 只能用 `ditto -c -k`，`zip -r` 同样会毁签名。`Info.plist` 里的 `CFBundleAllowMixedLocalizations` 也别删——bundle 里没有任何 `.lproj`，去掉它 Sparkle 自带的中文本地化不生效，更新窗口会变英文。
