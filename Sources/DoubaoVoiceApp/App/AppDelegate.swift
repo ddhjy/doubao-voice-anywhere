@@ -88,20 +88,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         "\(appDisplayName) — 按 \(GeneralSettings.voiceHotkey.displayString) 开始 / 结束语音输入"
     }
 
-    private static let statusItemLength: CGFloat = 24.5
-    private static let statusIconPointSize: CGFloat = 15.5
+    /// 图标宽 14pt，两侧各留 5pt。边距取整数，图标的像素才不会被摆到半个点上。
+    private static let statusItemLength: CGFloat = 24
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: Self.statusItemLength)
         if let button = item.button {
-            // 使用 SF Symbols；如缺失则回落为 emoji 文本。
-            if let image = Self.makeStatusIcon() {
-                button.image = image
-                button.imagePosition = .imageOnly
-                button.imageScaling = .scaleNone
-            } else {
-                button.title = "🎤"
-            }
+            button.image = Self.makeStatusIcon()
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
             button.toolTip = Self.defaultStatusItemToolTip
         }
         let menu = buildMenu()
@@ -110,21 +105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem = item
     }
 
+    /// 菜单栏图标是入库的模板图（`Resources/StatusIcon.png` 和 `@2x`），设计与导出见 `tools/StatusIcon.html`。
+    /// 不经 `.app` 直接跑可执行文件时 bundle 里没有这两张图，回落到系统的波形符号，菜单至少点得到。
     private static func makeStatusIcon() -> NSImage? {
-        let symbolNames = ["microphone.badge.ellipsis", "mic.circle"]
-        guard let symbol = symbolNames.lazy.compactMap({
-            NSImage(systemSymbolName: $0, accessibilityDescription: "豆包语音")
-        }).first else {
-            return nil
-        }
-
-        let configuration = NSImage.SymbolConfiguration(
-            pointSize: statusIconPointSize,
-            weight: NSFont.Weight.medium
-        )
-        let image = symbol.withSymbolConfiguration(configuration) ?? symbol
-        image.isTemplate = true
-        image.size = NSSize(width: statusIconPointSize, height: statusIconPointSize)
+        let image = NSImage(named: "StatusIcon")
+            ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
+        image?.isTemplate = true
+        image?.accessibilityDescription = "豆包语音"
         return image
     }
 

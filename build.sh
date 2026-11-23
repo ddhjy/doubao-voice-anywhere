@@ -172,6 +172,18 @@ for icon_artifact in "AppIcon.icns" "Assets.car"; do
   cp "$SCRIPT_DIR/Resources/$icon_artifact" "$BUNDLE_PATH/Contents/Resources/"
 done
 
+# ---- 菜单栏图标 ----
+#
+# 模板图 StatusIcon.png（1x）与 StatusIcon@2x.png 同样是入库产物；
+# 改设计请编辑 tools/StatusIcon.html 后执行 tools/export-status-icon.sh 重新导出。
+for status_icon in "StatusIcon.png" "StatusIcon@2x.png"; do
+  if [[ ! -f "$SCRIPT_DIR/Resources/$status_icon" ]]; then
+    echo "[错误] 找不到菜单栏图标：Resources/${status_icon}（用 tools/export-status-icon.sh 导出）" >&2
+    exit 1
+  fi
+  cp "$SCRIPT_DIR/Resources/$status_icon" "$BUNDLE_PATH/Contents/Resources/"
+done
+
 VERSION="${APP_VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 

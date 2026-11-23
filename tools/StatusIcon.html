@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="zh-CN">
+<!--
+  菜单栏图标：Resources/StatusIcon.png（1x）+ Resources/StatusIcon@2x.png（2x），模板图（纯黑 + alpha）。
+
+  用法：
+    open tools/StatusIcon.html       # 看上栏效果、构造和像素母版；改脚本里 MASTERS 的数就是改设计
+    tools/export-status-icon.sh      # 用无头 Chrome 跑这一页，把两张 PNG 写回 Resources/
+
+  设计接着 App 图标（tools/GenerateAppIcon.swift）往下推，同一个字形按菜单栏的条件重画一遍：
+    - 还是「三根声波，接一根光标」，声波的下一拍就是光标。不放麦克风的理由同 App 图标，
+      在菜单栏还多一条：常驻的麦克风读起来像「正在收音」。
+    - 模板图只有一种颜色，朱砂带不进来，光标只能靠形状认：加上下两道衬线，就是文本光标的 I 形。
+    - 声波照旧由虚到实，三档不透明度和 App 图标是同一组数。
+    - 高度 2 : 4 : 3 : 5，模数 3pt。App 图标是 3 : 5 : 4 : 6，这里是同一个起伏低一格：
+      15pt 高的图里 3 : 5 : 4 : 6 的模数是 2.5pt，声波会是奇数个像素高、光标是偶数个，
+      没法同时上下对称又落在整像素上。低一格之后起伏也更大，小尺寸下不会读成三根一样长的线。
+    - 笔画 1.5pt，和菜单栏里系统符号的笔画同重；间隙 2pt，比笔画略宽，竖条才不会连成一片。
+    - 总高 15pt 而不是 16pt：平头的形状比圆头的显大，比左邻右舍矮 1pt 看起来才一样高。
+
+  为什么是网页加 PNG，而不是 SF Symbol 或一张矢量图：
+    - 这张图只有 28 个像素宽，抗锯齿糊掉一条边，整个字形就散了。所以每个像素的 alpha
+      都在这一页里自己算（每像素 16 × 16 个采样点数覆盖率，不经过浏览器的抗锯齿），
+      页面上放大的格子就是写进 PNG 的值。
+    - 1x 不是 2x 缩小出来的：1.5pt 的笔画在普通屏上没有整像素可落，缩小只会得到一团灰。
+      1x 按像素重排：声波 2px、光标 1px（App 图标的 16pt 档也是这么取的）。
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>菜单栏图标 · 豆包随时说</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f5f4f1;
+    --ink: #1c1c1e;
+    --soft: #6b6b70;
+    --hairline: rgba(0, 0, 0, 0.09);
+    --panel: #ffffff;
+    --cinnabar: #c2542d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #151517;
+      --ink: #f1f1f3;
+      --soft: #98989f;
+      --hairline: rgba(255, 255, 255, 0.11);
+      --panel: #1d1d20;
+      --cinnabar: #e8825c;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  main {
+    width: min(100% - 48px, 840px);
+    margin: 0 auto;
+    padding: 72px 0 112px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 30px;
+    line-height: 1.2;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .lead {
+    margin: 10px 0 0;
+    font-size: 16px;
+    color: var(--soft);
+  }
+
+  section { margin-top: 64px; }
+
+  h2 {
+    margin: 0 0 18px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .note {
+    margin: 14px 0 0;
+    max-width: 62ch;
+    color: var(--soft);
+    font-size: 13px;
+  }
+
+  code {
+    font: inherit;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--hairline);
+  }
+
+  /* 上栏：按本机菜单栏的尺寸（30pt 高）和着色（深色下白 90%，浅色下黑 85%）摆一遍 */
+  .bars {
+    display: grid;
+    gap: 10px;
+  }
+
+  .bar {
+    height: 30px;
+    padding: 0 16px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    line-height: 1;
+    overflow: hidden;
+  }
+
+  .bar.dark {
+    background: #113169;
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .bar.light {
+    background: #e3e5ea;
+    color: rgba(0, 0, 0, 0.85);
+  }
+
+  .bar .menus,
+  .bar .items {
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+
+  .bar .menus { gap: 19px; }
+  .bar .menus b { font-weight: 600; }
+  .bar .items { gap: 21px; }
+
+  .bar svg,
+  .bar picture,
+  .bar img {
+    display: block;
+    flex: none;
+  }
+
+  .bar .clock {
+    width: 64px;
+    text-align: right;
+    font-weight: 500;
+  }
+
+  /* 构造 */
+  .construction {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 24px 56px;
+    align-items: center;
+  }
+
+  @media (max-width: 800px) {
+    .construction { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .sheet {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+
+  .sheet .pixel-grid { stroke: var(--hairline); stroke-width: 1; }
+  .sheet .bounds { fill: none; stroke: var(--soft); stroke-opacity: 0.5; stroke-width: 1; }
+  /* 半透明的声波按纸面底色调成实色，格线才不会从里面透出来 */
+  .sheet .shape { fill: color-mix(in srgb, var(--ink) calc(var(--opacity) * 100%), var(--page)); }
+  .sheet .guide { stroke: var(--cinnabar); stroke-width: 1; }
+  .sheet .guide.faint { stroke-opacity: 0.45; }
+  .sheet text {
+    fill: var(--cinnabar);
+    font-size: 12px;
+  }
+
+  .principles {
+    margin: 0;
+    display: grid;
+    gap: 18px;
+  }
+
+  .principles dt { font-weight: 600; }
+
+  .principles dd {
+    margin: 2px 0 0;
+    color: var(--soft);
+  }
+
+  /* 像素母版 */
+  .masters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px 40px;
+  }
+
+  .masters figure { margin: 0; }
+
+  .masters .plate {
+    padding: 18px;
+    border-radius: 8px;
+    background: var(--panel);
+  }
+
+  .masters svg {
+    display: block;
+    overflow: visible;
+  }
+
+  .masters .bounds { fill: none; stroke: var(--soft); stroke-opacity: 0.5; stroke-width: 1; }
+
+  .masters .px { fill: var(--ink); }
+  .masters .pixel-grid { stroke: var(--hairline); stroke-width: 1; }
+
+  .masters figcaption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--soft);
+  }
+
+  .masters figcaption b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* 导出 */
+  .files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .files a {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 9px 14px;
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--ink);
+    text-decoration: none;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    transition: box-shadow 0.15s ease;
+  }
+
+  .files a:hover { box-shadow: inset 0 0 0 1px var(--soft); }
+  .files a:active { transform: translateY(1px); }
+  .files a:focus-visible { outline: 2px solid var(--cinnabar); outline-offset: 2px; }
+  .files a span { color: var(--soft); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>菜单栏图标</h1>
+    <p class="lead">按一下，说话，字落在光标处。所以是三根声波，接一根光标。</p>
+  </header>
+
+  <section>
+    <h2>上栏</h2>
+    <div class="bars">
+      <div class="bar dark" data-tint="dark"></div>
+      <div class="bar light" data-tint="light"></div>
+    </div>
+    <p class="note">实际大小。浏览器缩放为 100% 时，这里的每个像素就是导出 PNG 里的像素：Retina 屏取 2x 母版，普通屏取 1x。</p>
+  </section>
+
+  <section>
+    <h2>构造</h2>
+    <div class="construction">
+      <svg class="sheet" id="construction" role="img" aria-label="图标构造：三根声波与一根 I 形光标，标注高度、拍位和不透明度"></svg>
+      <dl class="principles">
+        <div>
+          <dt>一族竖条</dt>
+          <dd>声音的样子是一排竖条，文字的样子是一根竖条。光标就落在声波的下一拍上。</dd>
+        </div>
+        <div>
+          <dt>靠形状认</dt>
+          <dd>菜单栏的模板图只有一种颜色，App 图标里的朱砂带不进来。上下两道衬线，让最后一根竖条成为文本光标。</dd>
+        </div>
+        <div>
+          <dt>由虚到实</dt>
+          <dd>三根声波的不透明度是 55%、78%、100%。声音会散，落成字才留得下来。</dd>
+        </div>
+        <div>
+          <dt>2 : 4 : 3 : 5</dt>
+          <dd>高度都是 3pt 的整数倍，和 App 图标的 3 : 5 : 4 : 6 是同一个起伏。每条边都落在整像素上。</dd>
+        </div>
+        <div>
+          <dt>1.5pt</dt>
+          <dd>笔画和系统符号同重，间隙 2pt。总高 15pt：平头的形状比圆头的邻居矮 1pt，看起来才一样高。</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <h2>像素母版</h2>
+    <div class="masters" id="masters"></div>
+    <p class="note">每一格的不透明度是逐像素算出来的，不经过浏览器的抗锯齿，指上去能看到数值。1x 不是 2x 的缩小，是按像素重排的一份：声波 2px，光标 1px。</p>
+  </section>
+
+  <section>
+    <h2>导出</h2>
+    <div class="files">
+      <a download="StatusIcon.png">StatusIcon.png <span>14 × 16</span></a>
+      <a download="StatusIcon@2x.png">StatusIcon@2x.png <span>28 × 32</span></a>
+    </div>
+    <p class="note">或者在仓库根目录执行 <code>tools/export-status-icon.sh</code>，两张图直接写回 <code>Resources/</code>。</p>
+  </section>
+</main>
+
+<script>
+'use strict';
+
+// ---- 设计 ----
+
+// 三根声波由虚到实，与 tools/GenerateAppIcon.swift 的 barOpacities 是同一组数。
+const FADE = [0.55, 0.78, 1];
+
+// 两张母版。单位都是各自那张图的像素；2x 是设计本身，1x 是按像素重排的一份。
+const MASTERS = [
+  {
+    file: 'StatusIcon@2x.png', scale: 2, width: 28, height: 32, label: 'Retina 屏',
+    // 字形 27 × 30。多出的一列留在右边：重心在光标一侧，整体往左让半个像素。
+    origin: [0, 1],
+    stroke: 3, gap: 4,
+    bars: [12, 24, 18], caret: 30,
+    stem: 3, serif: [9, 2], serifRadius: 1,
+  },
+  {
+    file: 'StatusIcon.png', scale: 1, width: 14, height: 16, label: '普通屏',
+    origin: [0, 0],
+    stroke: 2, gap: 2,
+    // 15px 的光标是奇数高，声波也都取奇数，才对得齐同一条中线。
+    bars: [5, 11, 9], caret: 15,
+    stem: 1, serif: [3, 1], serifRadius: 0,
+  },
+];
+
+// 字形只由圆角矩形组成：声波是胶囊，光标是一根直杆加两道衬线。
+function shapesOf(m) {
+  const [left, top] = m.origin;
+  const beat = m.stroke + m.gap;
+  const midline = top + m.caret / 2;
+
+  const shapes = m.bars.map((height, index) => ({
+    x: left + index * beat, y: midline - height / 2, w: m.stroke, h: height, r: m.stroke / 2, a: FADE[index],
+  }));
+
+  // 光标落在声波的下一拍。1x 的 1px 直杆居中不了 2px 的拍位，靠左取整。
+  const stemX = Math.floor(left + m.bars.length * beat + (m.stroke - m.stem) / 2);
+  const [serifWidth, serifHeight] = m.serif;
+  const serifX = stemX - (serifWidth - m.stem) / 2;
+  shapes.push({ x: stemX, y: top, w: m.stem, h: m.caret, r: 0, a: 1 });
+  for (const y of [top, top + m.caret - serifHeight]) {
+    shapes.push({ x: serifX, y, w: serifWidth, h: serifHeight, r: m.serifRadius, a: 1 });
+  }
+  return shapes;
+}
+
+// ---- 光栅化 ----
+
+function contains(shape, x, y) {
+  if (x < shape.x || x > shape.x + shape.w || y < shape.y || y > shape.y + shape.h) return false;
+  const nearestX = Math.min(Math.max(x, shape.x + shape.r), shape.x + shape.w - shape.r);
+  const nearestY = Math.min(Math.max(y, shape.y + shape.r), shape.y + shape.h - shape.r);
+  return (x - nearestX) ** 2 + (y - nearestY) ** 2 <= shape.r ** 2;
+}
+
+// 每个像素取 16 × 16 个采样点，alpha 是这些点上的平均不透明度（重叠处取最实的那个形状）。
+function rasterize(m, shapes) {
+  const SAMPLES = 16;
+  const alpha = new Float32Array(m.width * m.height);
+  for (let py = 0; py < m.height; py++) {
+    for (let px = 0; px < m.width; px++) {
+      let sum = 0;
+      for (let sy = 0; sy < SAMPLES; sy++) {
+        for (let sx = 0; sx < SAMPLES; sx++) {
+          const x = px + (sx + 0.5) / SAMPLES;
+          const y = py + (sy + 0.5) / SAMPLES;
+          let opacity = 0;
+          for (const shape of shapes) {
+            if (shape.a > opacity && contains(shape, x, y)) opacity = shape.a;
+          }
+          sum += opacity;
+        }
+      }
+      alpha[py * m.width + px] = sum / (SAMPLES * SAMPLES);
+    }
+  }
+  return alpha;
+}
+
+function toPNG(m, rgb, strength) {
+  const canvas = document.createElement('canvas');
+  canvas.width = m.width;
+  canvas.height = m.height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(m.width, m.height);
+  m.alpha.forEach((value, index) => {
+    image.data.set([...rgb, Math.round(value * strength * 255)], index * 4);
+  });
+  context.putImageData(image, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+for (const m of MASTERS) {
+  m.shapes = shapesOf(m);
+  m.alpha = rasterize(m, m.shapes);
+}
+
+// ---- 导出 ----
+
+// 模板图只用 alpha，颜色一律纯黑。tools/export-status-icon.sh 取的就是这两个链接。
+for (const m of MASTERS) {
+  document.querySelector(`a[download="${m.file}"]`).href = toPNG(m, [0, 0, 0], 1);
+}
+
+// ---- 上栏 ----
+
+// 邻居是照着系统符号的尺寸和笔画重画的，只用来比大小和轻重。
+const NEIGHBORS = `
+  <svg width="17" height="12" viewBox="0 0 17 12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+    <path d="M1.4 4.2a10.2 10.2 0 0 1 14.2 0"/>
+    <path d="M4.1 7a6.3 6.3 0 0 1 8.8 0"/>
+    <circle cx="8.5" cy="10.1" r="1.4" fill="currentColor" stroke="none"/>
+  </svg>
+  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+    <circle cx="5.3" cy="5.3" r="4.3"/>
+    <path d="M8.6 8.6 12 12"/>
+  </svg>
+  <svg width="26" height="12" viewBox="0 0 26 12" fill="currentColor" aria-hidden="true">
+    <rect x="0.5" y="0.5" width="22" height="11" rx="3.4" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <rect x="2" y="2" width="14" height="8" rx="2"/>
+    <path d="M24 4.1v3.8c.9-.3 1.5-1 1.5-1.9s-.6-1.6-1.5-1.9z" fill-opacity="0.45"/>
+  </svg>
+  <svg width="15" height="13" viewBox="0 0 15 13" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+    <rect x="0.65" y="0.65" width="13.7" height="4.9" rx="2.45"/>
+    <circle cx="11.6" cy="3.1" r="1.2" fill="currentColor" stroke="none"/>
+    <rect x="0.65" y="7.45" width="13.7" height="4.9" rx="2.45"/>
+    <circle cx="3.4" cy="9.9" r="1.2" fill="currentColor" stroke="none"/>
+  </svg>
+  <span class="clock">周一 9:41</span>`;
+
+// 本机菜单栏里模板图的着色：深色下是白 90%，浅色下是黑 85%。
+const TINTS = { dark: [[255, 255, 255], 0.9], light: [[0, 0, 0], 0.85] };
+
+// 按屏幕密度取母版，靠的是 <picture> 的媒体查询，不是 srcset 里的 1x / 2x 二选一：
+// 候选是 data URL 时 Chrome 总取密度最高的那张，普通屏上看到的就成了缩小的 2x。
+for (const bar of document.querySelectorAll('.bar')) {
+  const [rgb, strength] = TINTS[bar.dataset.tint];
+  const [retina, standard] = [2, 1].map((scale) => toPNG(MASTERS.find((m) => m.scale === scale), rgb, strength));
+  bar.innerHTML = `
+    <div class="menus"><b>访达</b><span>文件</span><span>编辑</span><span>显示</span><span>前往</span><span>窗口</span><span>帮助</span></div>
+    <div class="items">
+      <picture>
+        <source media="(min-resolution: 1.5dppx)" srcset="${retina} 2x">
+        <img width="14" height="16" src="${standard}" alt="豆包随时说的菜单栏图标">
+      </picture>
+      ${NEIGHBORS}
+    </div>`;
+}
+
+// ---- 画图用的小工具 ----
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function add(parent, name, attributes = {}, text) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
+  if (text !== undefined) node.textContent = text;
+  parent.append(node);
+  return node;
+}
+
+function gridPath(columns, rows, cell) {
+  let d = '';
+  for (let x = 1; x < columns; x++) d += `M${x * cell} 0V${rows * cell}`;
+  for (let y = 1; y < rows; y++) d += `M0 ${y * cell}H${columns * cell}`;
+  return d;
+}
+
+// ---- 构造 ----
+
+// 画的是 2x 母版的矢量形状（不是像素），所有标注都从 MASTERS 的数算出来。
+(function drawConstruction() {
+  const m = MASTERS[0];
+  const cell = 12;
+  const width = m.width * cell;
+  const height = m.height * cell;
+  const margin = { top: 10, right: 78, bottom: 62, left: 1 };
+  const svg = document.getElementById('construction');
+  svg.setAttribute('width', margin.left + width + margin.right);
+  svg.setAttribute('height', margin.top + height + margin.bottom);
+  svg.setAttribute('viewBox', `${-margin.left} ${-margin.top} ${margin.left + width + margin.right} ${margin.top + height + margin.bottom}`);
+
+  add(svg, 'path', { class: 'pixel-grid', d: gridPath(m.width, m.height, cell) });
+  add(svg, 'rect', { class: 'bounds', x: 0, y: 0, width, height });
+
+  const point = (pixels) => `${pixels / m.scale}pt`;
+  const midline = m.origin[1] + m.caret / 2;
+  const beat = m.stroke + m.gap;
+
+  // 高度：每根竖条的两端各拉一条线，右侧标出高度。
+  const heights = [...new Set([...m.bars, m.caret])].sort((a, b) => b - a);
+  for (const h of heights) {
+    for (const y of [midline - h / 2, midline + h / 2]) {
+      add(svg, 'path', { class: 'guide faint', d: `M0 ${y * cell}H${width + 10}` });
+    }
+    add(svg, 'text', { x: width + 18, y: (midline - h / 2) * cell + 4 }, point(h));
+  }
+
+  for (const shape of m.shapes) {
+    add(svg, 'rect', {
+      class: 'shape', style: `--opacity: ${shape.a}`,
+      x: shape.x * cell, y: shape.y * cell, width: shape.w * cell, height: shape.h * cell,
+      rx: shape.r * cell,
+    });
+  }
+
+  // 拍位：四拍等距，前三拍是声波，第四拍是光标。
+  const baseline = height + 20;
+  const beats = [...m.bars.keys(), m.bars.length].map((index) => (m.origin[0] + index * beat + m.stroke / 2) * cell);
+  add(svg, 'path', { class: 'guide', d: `M${beats[0]} ${baseline}H${beats[beats.length - 1]}` });
+  beats.forEach((x, index) => {
+    add(svg, 'path', { class: 'guide', d: `M${x} ${baseline - 5}V${baseline + 5}` });
+    const label = index < FADE.length ? `${Math.round(FADE[index] * 100)}%` : '光标';
+    add(svg, 'text', { x, y: baseline + 26, 'text-anchor': 'middle' }, label);
+  });
+  add(svg, 'text', { x: beats[beats.length - 1] + 18, y: baseline + 4 }, `每拍 ${point(beat)}`);
+})();
+
+// ---- 像素母版 ----
+
+(function drawMasters() {
+  const container = document.getElementById('masters');
+  for (const m of MASTERS) {
+    const cell = 18 / m.scale;
+    const figure = document.createElement('figure');
+    const plate = document.createElement('div');
+    plate.className = 'plate';
+    figure.append(plate);
+    const svg = add(plate, 'svg', {
+      width: m.width * cell, height: m.height * cell,
+      viewBox: `0 0 ${m.width * cell} ${m.height * cell}`,
+      role: 'img', 'aria-label': `${m.scale}x 母版的像素`,
+    });
+    const pixels = add(svg, 'g', { class: 'px', 'shape-rendering': 'crispEdges' });
+    m.alpha.forEach((value, index) => {
+      if (value === 0) return;
+      const x = index % m.width;
+      const y = Math.floor(index / m.width);
+      const pixel = add(pixels, 'rect', { x: x * cell, y: y * cell, width: cell, height: cell, 'fill-opacity': value.toFixed(3) });
+      add(pixel, 'title', {}, `${x}, ${y} · ${Math.round(value * 100)}%`);
+    });
+    add(svg, 'path', { class: 'pixel-grid', d: gridPath(m.width, m.height, cell) });
+    add(svg, 'rect', { class: 'bounds', x: 0, y: 0, width: m.width * cell, height: m.height * cell });
+
+    const caption = document.createElement('figcaption');
+    caption.innerHTML = `<b>${m.scale}x</b> · ${m.width} × ${m.height} 像素 · ${m.label}`;
+    figure.append(caption);
+    container.append(figure);
+  }
+})();
+</script>
+</body>
+</html>

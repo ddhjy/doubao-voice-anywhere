@@ -10,6 +10,7 @@
 - `appcast.xml` 在仓库根、跟着 `main` 走，App 里的 `SUFeedURL` 写死指向它的 raw 地址：换路径 / 换分支 = 老版本永久失联。它由 `tools/update-appcast.sh` 生成，别手改。`CFBundleVersion` 必须随版本号单调递增（CI 里就取 tag 的版本号），Sparkle 靠它比新旧。
 - universal 包必须逐架构编译再 `lipo` 合并（见 `build.sh`）。别改回一条 `swift build --arch arm64 --arch x86_64`：那会切到 Xcode build system，在 Xcode 26 上必崩在「The Xcode build system has terminated」。
 - App 图标是入库产物（`Resources/AppIcon.icns` + `AppIcon.icon` + `Assets.car`），改设计编辑 `tools/GenerateAppIcon.swift` 后执行 `swift tools/GenerateAppIcon.swift` 重新生成（编 `Assets.car` 需要 Xcode 26 的 actool）。icns 走 `CFBundleIconFile` 服务 macOS 13–15，`Assets.car` 走 `CFBundleIconName` 让 macOS 26+ 满版显示——只有 icns 时 Tahoe 会把图标缩小垫在白色底板上。CI（macos-15 runner）默认用 Xcode 16，编不了 `Assets.car`，`build.sh` 只拷贝不生成。
+- 菜单栏图标也是入库产物（`Resources/StatusIcon.png` + `StatusIcon@2x.png`，纯黑加 alpha 的模板图），与 App 图标是同一个字形：三根声波接一根光标。设计、上栏预览和每个像素的取值都在 `tools/StatusIcon.html`，改完执行 `tools/export-status-icon.sh`（无头 Chrome 跑这一页）重新导出。两张图分别按像素排过，1x 不是 2x 的缩小，别拿一张去缩放出另一张。
 - 有真实证书时 `build.sh` 一律带 Hardened Runtime（公证前提）；安全时间戳要联网，只由 `CODE_SIGN_TIMESTAMP=1` 打开，本地默认关着好让断网也能签。
 
 ## 架构速览
